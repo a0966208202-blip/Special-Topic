@@ -6,14 +6,12 @@ __pycache__/
 # 排除大檔案資料夾
 archive/
 report/
-b3_distillation_result/
-b3_result/
-b4_result/
-distillation_result/
-result/
 
 # 排除 PDF 檔案
 *.pdf
 
 # 排除所有的 PyTorch 模型與數據檔（避免超過 100MB 限制）
 *.pt
+
+# 排除所有的 Keras 模型檔案
+*.keras

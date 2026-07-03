@@ -1,0 +1,36 @@
+============================================================
+Knowledge Distillation Report
+Teacher: EfficientNetB0 ¡÷ Student: ResNet20
+============================================================
+
+Teacher Accuracy: 95.11%
+Student Accuracy: 93.08%
+Performance Retention: 97.87%
+
+Classification Report:
+              precision    recall  f1-score   support
+
+ Hemorrhagic       0.96      0.84      0.90       219
+    Ischemia       0.92      0.77      0.84       226
+      Normal       0.93      0.99      0.96       885
+
+    accuracy                           0.93      1330
+   macro avg       0.93      0.87      0.90      1330
+weighted avg       0.93      0.93      0.93      1330
+
+--- Additional Metrics (One-vs-Rest) ---
+Class: Hemorrhagic
+  Specificity: 0.9928
+  NPV:         0.9692
+Class: Ischemia
+  Specificity: 0.9855
+  NPV:         0.9552
+Class: Normal
+  Specificity: 0.8472
+  NPV:         0.9843
+
+--- ROC-AUC Scores ---
+  Hemorrhagic AUC: 0.9946
+  Ischemia AUC: 0.9671
+  Normal AUC: 0.9798
+  Micro-average AUC: 0.9868

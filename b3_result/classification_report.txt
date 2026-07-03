@@ -1,0 +1,31 @@
+Test Set Accuracy: 95.41%
+Test Set Loss: 0.1681
+
+Classification Report:
+              precision    recall  f1-score   support
+
+ Hemorrhagic       0.95      0.93      0.94       219
+    Ischemia       0.88      0.92      0.90       226
+      Normal       0.97      0.97      0.97       885
+
+    accuracy                           0.95      1330
+   macro avg       0.94      0.94      0.94      1330
+weighted avg       0.95      0.95      0.95      1330
+
+
+--- Additional Metrics (One-vs-Rest) ---
+Class: Hemorrhagic
+  Specificity: 0.9901
+  NPV:           0.9865
+Class: Ischemia
+  Specificity: 0.9755
+  NPV:           0.9827
+Class: Normal
+  Specificity: 0.9483
+  NPV:           0.9399
+
+--- ROC-AUC Scores ---
+  Hemorrhagic AUC: 0.9919
+  Ischemia AUC: 0.9920
+  Normal AUC: 0.9928
+  Micro-average AUC: 0.9949
