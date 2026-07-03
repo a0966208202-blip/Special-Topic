@@ -6,5 +6,5 @@ __pycache__/
 # 排除所有的 PyTorch 模型與數據檔（避免超過 100MB 限制）
 *.pt
 
-# 排除所有的 Keras 模型檔案
+# 排除所有的 Keras 模型檔案（避免超過 100MB 限制）
 *.keras
