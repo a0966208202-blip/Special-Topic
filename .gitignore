@@ -3,13 +3,6 @@
 __pycache__/
 *.pyc
 
-# 排除大檔案資料夾
-archive/
-report/
-
-# 排除 PDF 檔案
-*.pdf
-
 # 排除所有的 PyTorch 模型與數據檔（避免超過 100MB 限制）
 *.pt
 
