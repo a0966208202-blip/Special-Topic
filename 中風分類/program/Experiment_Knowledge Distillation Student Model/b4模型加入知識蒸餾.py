@@ -259,7 +259,7 @@ class DistillationTrainer(tf.keras.Model):
 # ============================================================
 TEMPERATURE = 3.0
 ALPHA       = 0.7
-NUM_EPOCHS  = 50  # 建議 50+，示範可改 10
+NUM_EPOCHS  = 10  # 建議 50+，示範可改 10
 
 trainer = DistillationTrainer(student=student_model, teacher=teacher_model)
 trainer.compile(
