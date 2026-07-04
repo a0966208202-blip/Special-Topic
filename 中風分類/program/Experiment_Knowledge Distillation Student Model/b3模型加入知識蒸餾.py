@@ -452,7 +452,7 @@ report_path = os.path.join(OUTPUT_DIR, 'distillation_report.txt')
 with open(report_path, 'w') as f:
     f.write("=" * 60 + "\n")
     f.write("Knowledge Distillation Report\n")
-    f.write("Teacher: EfficientNetB0 → Student: ResNet20\n")
+    f.write("Teacher: EfficientNetB3 → Student: ResNet20\n")
     f.write("=" * 60 + "\n\n")
     f.write(f"Teacher Accuracy: {teacher_acc*100:.2f}%\n")
     f.write(f"Student Accuracy: {student_acc*100:.2f}%\n")
