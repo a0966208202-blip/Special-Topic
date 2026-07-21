@@ -332,7 +332,9 @@ plot_training_curves(history, OUTPUT_DIR)
 # 10. 完整評估 (含 Specificity, NPV, ROC-AUC)
 # ============================================================
 print("\n--- 載入最佳學生模型進行評估 ---")
-best_student = student_model
+best_student_path = os.path.join(OUTPUT_DIR, 'best_student_model.keras')
+best_student = tf.keras.models.load_model(best_student_path)
+print(f"✓ 已載入最佳學生模型: {best_student_path}")
 
 # 取得預測結果
 y_pred_logits = best_student.predict(test_loader)
@@ -351,12 +353,12 @@ teacher_model.compile(
 _, teacher_acc = teacher_model.evaluate(test_loader, verbose=0)
 
 # 用 Student 評估 (logits)
-student_model.compile(
+best_student.compile(
     optimizer='adam',
     loss=tf.keras.losses.CategoricalCrossentropy(from_logits=True),
     metrics=['accuracy']
 )
-_, student_acc = student_model.evaluate(test_loader, verbose=0)
+_, student_acc = best_student.evaluate(test_loader, verbose=0)
 
 print("=" * 60)
 print("最終效能比較")
