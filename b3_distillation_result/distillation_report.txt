@@ -1,6 +1,6 @@
 ============================================================
 Knowledge Distillation Report
-Teacher: EfficientNetB0 ¡÷ Student: ResNet20
+Teacher: EfficientNetB3 ¡÷ Student: ResNet20
 ============================================================
 
 Teacher Accuracy: 95.41%
