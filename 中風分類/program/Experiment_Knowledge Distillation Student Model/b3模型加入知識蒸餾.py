@@ -273,13 +273,29 @@ print(f"  溫度參數 (Temperature): {TEMPERATURE}")
 print(f"  Alpha (Hard loss 權重): {ALPHA}")
 print(f"  訓練輪數: {NUM_EPOCHS}")
 
-# Checkpoint 儲存最佳模型
-checkpoint_cb = tf.keras.callbacks.ModelCheckpoint(
+# Checkpoint 儲存最佳模型 (只存 student 子模型,避免存到整個 DistillationTrainer)
+class SaveBestStudentCallback(tf.keras.callbacks.Callback):
+    def __init__(self, filepath, monitor='val_loss', mode='min'):
+        super().__init__()
+        self.filepath = filepath
+        self.monitor = monitor
+        self.mode = mode
+        self.best = np.inf if mode == 'min' else -np.inf
+
+    def on_epoch_end(self, epoch, logs=None):
+        current = logs.get(self.monitor)
+        if current is None:
+            return
+        improved = (current < self.best) if self.mode == 'min' else (current > self.best)
+        if improved:
+            self.best = current
+            self.model.student.save(self.filepath)
+            print(f"\nEpoch {epoch+1}: {self.monitor} improved to {current:.4f}, saving student model to {self.filepath}")
+
+checkpoint_cb = SaveBestStudentCallback(
     filepath=os.path.join(OUTPUT_DIR, 'best_student_model.keras'),
     monitor='val_loss',
-    save_best_only=True,
-    mode='min',
-    verbose=1
+    mode='min'
 )
 
 print("\n--- 開始知識蒸餾訓練 ---")
