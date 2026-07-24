@@ -59,11 +59,11 @@ print(f"✓ 輸出資料夾: {OUTPUT_DIR}")
 # Teacher2=EfficientNetB0 吃 224x224)，所以改用 tf.data 自己刻 pipeline：
 # 同一張圖讀進來一次，resize 成三種尺寸 (teacher1 / teacher2 / student 各一份)，
 # 確保三者對應到同一張圖、同一個 label，順序不會錯位。
- 
+
 TEACHER1_SIZE = (300, 300)   # EfficientNetB3
 TEACHER2_SIZE = (224, 224)   # EfficientNetB0，換成你實際的 teacher2 解析度
 STUDENT_SIZE  = (300, 300)   # TA (ResNet20) / Student (CNN8) 共用的尺寸
- 
+
 def get_ct_dataloaders(data_dir, batch_size=32,
                         teacher1_size=TEACHER1_SIZE,
                         teacher2_size=TEACHER2_SIZE,
@@ -71,62 +71,62 @@ def get_ct_dataloaders(data_dir, batch_size=32,
     ischemia_path    = os.path.join(data_dir, 'Ischemia',    'PNG')
     hemorrhagic_path = os.path.join(data_dir, 'Hemorrhagic', 'PNG')
     normal_path      = os.path.join(data_dir, 'Normal',      'PNG')
- 
+
     imgs, labels = [], []
     for label_name in ["Normal", "Ischemia", "Hemorrhagic"]:
         path = locals()[f"{label_name.lower()}_path"]
         for img in os.listdir(path):
             imgs.append(os.path.join(path, img))
             labels.append(label_name)
- 
+
     df = pd.DataFrame({"Image_path": imgs, "Label": labels})
- 
+
     # 切分：train 64% / val 16% / test 20%
     train_df, test_df = train_test_split(
         df, test_size=0.2, random_state=42, stratify=df['Label'])
     train_df, val_df  = train_test_split(
         train_df, test_size=0.2, random_state=42, stratify=train_df['Label'])
- 
+
     print(f"\n資料分布：Train={len(train_df)}, Val={len(val_df)}, Test={len(test_df)}")
- 
+
     class_names = sorted(df['Label'].unique())
     label_to_idx = {name: i for i, name in enumerate(class_names)}
- 
+
     def make_dataset(sub_df, shuffle):
         paths = sub_df['Image_path'].values
         label_idx = sub_df['Label'].map(label_to_idx).values
- 
+
         def load_and_preprocess(path, label):
             img_raw = tf.io.read_file(path)
             img = tf.image.decode_png(img_raw, channels=3)
             img = tf.cast(img, tf.float32)
- 
+
             img_t1 = preprocess_input(tf.image.resize(img, teacher1_size))
             img_t2 = preprocess_input(tf.image.resize(img, teacher2_size))
             img_s  = preprocess_input(tf.image.resize(img, student_size))
- 
+
             label_onehot = tf.one_hot(label, depth=len(class_names))
             return (img_t1, img_t2, img_s), label_onehot
- 
+
         ds = tf.data.Dataset.from_tensor_slices((paths, label_idx))
         if shuffle:
             ds = ds.shuffle(buffer_size=len(paths), seed=42)
         ds = ds.map(load_and_preprocess, num_parallel_calls=tf.data.AUTOTUNE)
         ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
         return ds
- 
+
     train_ds = make_dataset(train_df, shuffle=True)
     val_ds   = make_dataset(val_df,   shuffle=False)
     test_ds  = make_dataset(test_df,  shuffle=False)
- 
+
     # 供評估階段使用的 test 標籤 (依 test_df 原始順序，因為 shuffle=False)
     test_labels = test_df['Label'].map(label_to_idx).values
- 
+
     return train_ds, val_ds, test_ds, len(train_df), class_names, test_labels
- 
+
 train_loader, val_loader, test_loader, train_size, CLASS_NAMES, test_labels = get_ct_dataloaders(
     data_dir=DATA_DIR, batch_size=32)
- 
+
 num_classes = len(CLASS_NAMES)
 print(f"類別數: {num_classes}")
 print(f"訓練樣本: {train_size}")
@@ -167,61 +167,61 @@ def resnet_block(x, filters, kernel_size=3, stride=1, use_shortcut=False):
 
 def get_ta_model(input_shape=STUDENT_SIZE + (3,), num_classes=3):
     inputs = layers.Input(shape=input_shape)
- 
+
     x = layers.Conv2D(32, 3, strides=2, padding='same', use_bias=False)(inputs)
     x = layers.BatchNormalization()(x)
     x = layers.ReLU()(x)
     x = layers.MaxPooling2D(3, strides=2, padding='same')(x)
- 
+
     # Stage 1: 16 filters
     x = resnet_block(x, 16, use_shortcut=True)
     x = resnet_block(x, 16)
     x = resnet_block(x, 16)
- 
+
     # Stage 2: 32 filters
     x = resnet_block(x, 32, stride=2, use_shortcut=True)
     x = resnet_block(x, 32)
     x = resnet_block(x, 32)
- 
+
     # Stage 3: 64 filters
     x = resnet_block(x, 64, stride=2, use_shortcut=True)
     x = resnet_block(x, 64)
     x = resnet_block(x, 64)
- 
+
     x = layers.GlobalAveragePooling2D()(x)
     x = layers.Dropout(0.3)(x)
     outputs = layers.Dense(num_classes)(x)
- 
+
     return models.Model(inputs, outputs, name='ResNet20_TA')
 
 # --- Student Model: CNN8 ---
 def get_student_model(input_shape=STUDENT_SIZE + (3,), num_classes=3):
     inputs = layers.Input(shape=input_shape)
- 
+
     x = layers.Conv2D(16, 3, padding='same', use_bias=False)(inputs)
     x = layers.BatchNormalization()(x)
     x = layers.ReLU()(x)
     x = layers.MaxPooling2D()(x)
- 
+
     x = layers.Conv2D(32, 3, padding='same', use_bias=False)(x)
     x = layers.BatchNormalization()(x)
     x = layers.ReLU()(x)
     x = layers.MaxPooling2D()(x)
- 
+
     x = layers.Conv2D(64, 3, padding='same', use_bias=False)(x)
     x = layers.BatchNormalization()(x)
     x = layers.ReLU()(x)
     x = layers.MaxPooling2D()(x)
- 
+
     x = layers.Conv2D(128, 3, padding='same', use_bias=False)(x)
     x = layers.BatchNormalization()(x)
     x = layers.ReLU()(x)
     x = layers.GlobalAveragePooling2D()(x)
- 
+
     x = layers.Dense(64, activation='relu')(x)
     x = layers.Dropout(0.3)(x)
     outputs = layers.Dense(num_classes)(x)
- 
+
     return models.Model(inputs, outputs, name='CNN8_Student')
 
 teacher1_model = get_teacher_model(TEACHER1_PATH)
@@ -255,7 +255,7 @@ compare_models({
 # ============================================================
 # 7. 知識蒸餾 Trainer 定義 (distillation.py 對應區塊)
 # ============================================================
- 
+
 # --- Stage 1 用: 2 個 Teacher -> TA ---
 class MultiTeacherDistillationTrainer(tf.keras.Model):
     def __init__(self, student, teachers, teacher_weights=None):
@@ -264,7 +264,7 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
         self.teachers = teachers  # list, e.g. [teacher1_model, teacher2_model]
         n = len(teachers)
         self.teacher_weights = teacher_weights or [1.0 / n] * n
- 
+
     def compile(self, optimizer, alpha, temperature):
         super().compile(
             optimizer=optimizer,
@@ -275,7 +275,7 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
         self.temperature = temperature
         self.student_loss_fn = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
         self.distillation_loss_fn = tf.keras.losses.KLDivergence()
- 
+
     def _ensemble_teacher_soft(self, x_t1, x_t2):
         # x_t1 餵給 teachers[0]（例如 300x300 給 EfficientNetB3）
         # x_t2 餵給 teachers[1]（例如 224x224 給 EfficientNetB0）
@@ -285,34 +285,34 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
             teacher_preds = teacher(x_i, training=False)
             soft += w * tf.nn.softmax(teacher_preds / self.temperature, axis=1)
         return soft
- 
+
     def train_step(self, data):
         (x_t1, x_t2, x_student), y = data  # 三種尺寸的圖 + one-hot label
- 
+
         teacher_soft = self._ensemble_teacher_soft(x_t1, x_t2)  # 兩個 teacher 的平均 soft label
- 
+
         with tf.GradientTape() as tape:
             student_preds = self.student(x_student, training=True)  # TA 用自己的尺寸 (student_size)
- 
+
             student_loss = self.student_loss_fn(y, student_preds)
- 
+
             distillation_loss = self.distillation_loss_fn(
                 teacher_soft,
                 tf.nn.softmax(student_preds / self.temperature, axis=1)
             )
- 
+
             loss = (self.alpha * student_loss +
                     (1 - self.alpha) * distillation_loss * (self.temperature ** 2))
- 
+
         gradients = tape.gradient(loss, self.student.trainable_variables)
         self.optimizer.apply_gradients(
             zip(gradients, self.student.trainable_variables))
         self.compiled_metrics.update_state(y, tf.nn.softmax(student_preds, axis=1))
- 
+
         results = {m.name: m.result() for m in self.metrics}
         results['loss'] = loss
         return results
- 
+
     def test_step(self, data):
         (x_t1, x_t2, x_student), y = data
         student_preds = self.student(x_student, training=False)
@@ -321,18 +321,18 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
         results = {m.name: m.result() for m in self.metrics}
         results['loss'] = student_loss
         return results
- 
+
     def get_config(self):
         return {}
- 
- 
+
+
 # --- Stage 2 用: TA -> Student (TA 和 Student 都吃 student_size，所以只取 x_student) ---
 class DistillationTrainer(tf.keras.Model):
     def __init__(self, student, teacher):
         super().__init__()
         self.teacher = teacher
         self.student = student
- 
+
     def compile(self, optimizer, alpha, temperature):
         super().compile(
             optimizer=optimizer,
@@ -343,34 +343,34 @@ class DistillationTrainer(tf.keras.Model):
         self.temperature = temperature
         self.student_loss_fn = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
         self.distillation_loss_fn = tf.keras.losses.KLDivergence()
- 
+
     def train_step(self, data):
         (_x_t1, _x_t2, x_student), y = data  # Stage 2 只需要 student_size 那份圖
- 
+
         teacher_preds = self.teacher(x_student, training=False)
- 
+
         with tf.GradientTape() as tape:
             student_preds = self.student(x_student, training=True)
- 
+
             student_loss = self.student_loss_fn(y, student_preds)
- 
+
             distillation_loss = self.distillation_loss_fn(
                 tf.nn.softmax(teacher_preds / self.temperature, axis=1),
                 tf.nn.softmax(student_preds / self.temperature, axis=1)
             )
- 
+
             loss = (self.alpha * student_loss +
                     (1 - self.alpha) * distillation_loss * (self.temperature ** 2))
- 
+
         gradients = tape.gradient(loss, self.student.trainable_variables)
         self.optimizer.apply_gradients(
             zip(gradients, self.student.trainable_variables))
         self.compiled_metrics.update_state(y, tf.nn.softmax(student_preds, axis=1))
- 
+
         results = {m.name: m.result() for m in self.metrics}
         results['loss'] = loss
         return results
- 
+
     def test_step(self, data):
         (_x_t1, _x_t2, x_student), y = data
         student_preds = self.student(x_student, training=False)
@@ -379,7 +379,7 @@ class DistillationTrainer(tf.keras.Model):
         results = {m.name: m.result() for m in self.metrics}
         results['loss'] = student_loss
         return results
- 
+
     def get_config(self):
         return {}
 
@@ -406,10 +406,16 @@ print(f"  溫度參數 (Temperature): {TEMPERATURE}")
 print(f"  Alpha (Hard loss 權重): {ALPHA}")
 print(f"  訓練輪數: {NUM_EPOCHS}")
 
+# ⚠️ 修正處：自訂的 MultiTeacherDistillationTrainer 沒有完整的 get_config/from_config，
+# ModelCheckpoint 存整個 trainer 存下來的 .keras 檔之後讀不回來 (TypeError: Could not
+# locate class ...)。改成只存權重 (save_weights_only=True)，訓練完再把最佳權重讀回
+# trainer，然後另存一份「純模型」的 ta_model — 這份是普通的 functional model，
+# 之後 load_model() 一定讀得回來。
 ta_checkpoint_cb = tf.keras.callbacks.ModelCheckpoint(
-    filepath=os.path.join(OUTPUT_DIR, 'best_ta_model.keras'),
+    filepath=os.path.join(OUTPUT_DIR, 'best_ta.weights.h5'),
     monitor='val_loss',
     save_best_only=True,
+    save_weights_only=True,
     mode='min',
     verbose=1
 )
@@ -424,7 +430,9 @@ ta_history = ta_trainer.fit(
 )
 print("\n--- Stage 1 訓練完成 ---")
 
-ta_model.save(os.path.join(OUTPUT_DIR, 'ta_model_distilled.keras'))
+# 把訓練過程中最好的權重讀回來，再另存成「純模型」檔案
+ta_trainer.load_weights(os.path.join(OUTPUT_DIR, 'best_ta.weights.h5'))
+ta_model.save(os.path.join(OUTPUT_DIR, 'best_ta_model.keras'))
 print("✓ TA 模型已儲存！")
 
 # ============================================================
@@ -448,10 +456,12 @@ print(f"  溫度參數 (Temperature): {TEMPERATURE}")
 print(f"  Alpha (Hard loss 權重): {ALPHA}")
 print(f"  訓練輪數: {NUM_EPOCHS}")
 
+# ⚠️ 同樣的修正：這裡也改成只存權重，訓練完再另存純模型
 student_checkpoint_cb = tf.keras.callbacks.ModelCheckpoint(
-    filepath=os.path.join(OUTPUT_DIR, 'best_student_model.keras'),
+    filepath=os.path.join(OUTPUT_DIR, 'best_student.weights.h5'),
     monitor='val_loss',
     save_best_only=True,
+    save_weights_only=True,
     mode='min',
     verbose=1
 )
@@ -466,7 +476,8 @@ student_history = student_trainer.fit(
 )
 print("\n--- Stage 2 訓練完成 ---")
 
-student_model.save(os.path.join(OUTPUT_DIR, 'student_model_distilled.keras'))
+student_trainer.load_weights(os.path.join(OUTPUT_DIR, 'best_student.weights.h5'))
+student_model.save(os.path.join(OUTPUT_DIR, 'best_student_model.keras'))
 print("✓ 學生模型已儲存！")
 
 # ============================================================
@@ -509,37 +520,37 @@ print("\n--- 載入最佳學生模型進行評估 ---")
 best_student_path = os.path.join(OUTPUT_DIR, 'best_student_model.keras')
 best_student = tf.keras.models.load_model(best_student_path)
 print(f"✓ 已載入最佳學生模型: {best_student_path}")
- 
+
 # test_loader 現在吐出 ((x_t1, x_t2, x_student), y)，
 # 每個模型解析度不同，所以各自 map 出自己要的那份圖
 test_loader_t1      = test_loader.map(lambda xs, y: (xs[0], y))
 test_loader_t2      = test_loader.map(lambda xs, y: (xs[1], y))
 test_loader_student = test_loader.map(lambda xs, y: (xs[2], y))
- 
+
 y_true = test_labels  # 從 get_ct_dataloaders 回傳的原始標籤 (test_df 順序，shuffle=False)
 n_classes = len(CLASS_NAMES)
- 
+
 y_pred_logits = best_student.predict(test_loader_student.map(lambda x, y: x))
 y_pred_probs  = tf.nn.softmax(y_pred_logits, axis=1).numpy()
 y_pred        = np.argmax(y_pred_probs, axis=1)
- 
+
 # --- Accuracy: Teacher1 / Teacher2 / TA / Student ---
 teacher1_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
 _, teacher1_acc = teacher1_model.evaluate(test_loader_t1, verbose=0)
- 
+
 teacher2_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
 _, teacher2_acc = teacher2_model.evaluate(test_loader_t2, verbose=0)
- 
+
 best_ta_model.compile(optimizer='adam',
                        loss=tf.keras.losses.CategoricalCrossentropy(from_logits=True),
                        metrics=['accuracy'])
 _, ta_acc = best_ta_model.evaluate(test_loader_student, verbose=0)
- 
+
 best_student.compile(optimizer='adam',
                       loss=tf.keras.losses.CategoricalCrossentropy(from_logits=True),
                       metrics=['accuracy'])
 _, student_acc = best_student.evaluate(test_loader_student, verbose=0)
- 
+
 print("=" * 60)
 print("最終效能比較")
 print("=" * 60)
@@ -549,12 +560,12 @@ print(f"TA (ResNet20) 準確率:           {ta_acc*100:.2f}%")
 print(f"Student (CNN8) 準確率:          {student_acc*100:.2f}%")
 print(f"Student 相對 TA 的效能保留率:    {100 * student_acc / ta_acc:.2f}%")
 print("=" * 60)
- 
+
 # --- Classification Report ---
 print("\nClassification Report (Student Model):")
 report = classification_report(y_true, y_pred, target_names=CLASS_NAMES)
 print(report)
- 
+
 # --- Confusion Matrix ---
 cm = confusion_matrix(y_true, y_pred)
 plt.figure(figsize=(8, 6))
@@ -567,51 +578,51 @@ plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, 'confusion_matrix.png'))
 plt.close()
 print("✓ Confusion Matrix 已儲存")
- 
+
 # --- Specificity & NPV ---
 print("\n--- Specificity & NPV (per-class) ---")
 specificities, npvs = [], []
 report_lines = ["\n--- Additional Metrics (One-vs-Rest) ---"]
- 
+
 for i in range(n_classes):
     FP = cm[:, i].sum() - cm[i, i]
     FN = cm[i, :].sum() - cm[i, i]
     TN = cm.sum() - (cm[i, i] + FP + FN)
- 
+
     specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
     npv         = TN / (TN + FN) if (TN + FN) > 0 else 0
     specificities.append(specificity)
     npvs.append(npv)
- 
+
     print(f"Class: {CLASS_NAMES[i]}")
     print(f"  Specificity: {specificity:.4f}")
     print(f"  NPV:         {npv:.4f}")
     report_lines.append(f"Class: {CLASS_NAMES[i]}")
     report_lines.append(f"  Specificity: {specificity:.4f}")
     report_lines.append(f"  NPV:         {npv:.4f}")
- 
+
 # --- ROC-AUC ---
 print("\n--- ROC-AUC Curve ---")
 y_true_bin = label_binarize(y_true, classes=range(n_classes))
- 
+
 fpr, tpr, roc_auc = {}, {}, {}
 for i in range(n_classes):
     fpr[i], tpr[i], _ = roc_curve(y_true_bin[:, i], y_pred_probs[:, i])
     roc_auc[i] = auc(fpr[i], tpr[i])
- 
+
 fpr["micro"], tpr["micro"], _ = roc_curve(y_true_bin.ravel(), y_pred_probs.ravel())
 roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
- 
+
 plt.figure(figsize=(10, 8))
 plt.plot(fpr["micro"], tpr["micro"],
          label=f'Micro-average ROC (AUC = {roc_auc["micro"]:.4f})',
          color='deeppink', linestyle=':', linewidth=4)
- 
+
 colors = cycle(['aqua', 'darkorange', 'cornflowerblue'])
 for i, color in zip(range(n_classes), colors):
     plt.plot(fpr[i], tpr[i], color=color, lw=2,
              label=f'ROC - {CLASS_NAMES[i]} (AUC = {roc_auc[i]:.4f})')
- 
+
 plt.plot([0, 1], [0, 1], 'k--', lw=2)
 plt.xlim([0.0, 1.0])
 plt.ylim([0.0, 1.05])
@@ -623,7 +634,7 @@ plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, 'roc_auc_curve.png'))
 plt.close()
 print("✓ ROC-AUC 曲線已儲存")
- 
+
 report_lines.append("\n--- ROC-AUC Scores ---")
 for i in range(n_classes):
     report_lines.append(f"  {CLASS_NAMES[i]} AUC: {roc_auc[i]:.4f}")
