@@ -418,7 +418,7 @@ class SaveBestInnerModelWeights(tf.keras.callbacks.Callback):
 # ============================================================
 TEMPERATURE = 3.0
 ALPHA       = 0.7
-NUM_EPOCHS  = 10  # 建議 50+，示範可改 10
+NUM_EPOCHS  = 50  # 建議 50+，示範可改 10
 
 ta_trainer = MultiTeacherDistillationTrainer(
     student=ta_model,
