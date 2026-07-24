@@ -384,6 +384,36 @@ class DistillationTrainer(tf.keras.Model):
         return {}
 
 # ============================================================
+# 7b. 自訂 Callback：存「內部真正的模型」權重，不是整個 Trainer 外殼
+# ============================================================
+# ta_trainer / student_trainer 是自訂的 subclassed Model，沒有定義 call()，
+# Keras 判斷不出它的輸入形狀 -> 永遠處於「未 build」狀態 -> 不能直接 save_weights。
+# 但 trainer 裡面包的 ta_model / student_model 是標準 Functional model，
+# 建立的當下就已經 built 好了，所以改成用這個 callback 直接存那個內部模型。
+class SaveBestInnerModelWeights(tf.keras.callbacks.Callback):
+    def __init__(self, inner_model, filepath, monitor='val_loss', mode='min'):
+        super().__init__()
+        self.inner_model = inner_model
+        self.filepath = filepath
+        self.monitor = monitor
+        self.mode = mode
+        self.best = float('inf') if mode == 'min' else -float('inf')
+
+    def on_epoch_end(self, epoch, logs=None):
+        current = (logs or {}).get(self.monitor)
+        if current is None:
+            return
+        improved = (current < self.best) if self.mode == 'min' else (current > self.best)
+        if improved:
+            print(f"\nEpoch {epoch + 1}: {self.monitor} improved from {self.best:.5f} to "
+                  f"{current:.5f}, saving model to {self.filepath}")
+            self.best = current
+            self.inner_model.save_weights(self.filepath)
+        else:
+            print(f"\nEpoch {epoch + 1}: {self.monitor} did not improve from {self.best:.5f}")
+
+
+# ============================================================
 # 8. Stage 1 訓練: 2 個 Teacher -> TA
 # ============================================================
 TEMPERATURE = 3.0
@@ -411,13 +441,13 @@ print(f"  訓練輪數: {NUM_EPOCHS}")
 # locate class ...)。改成只存權重 (save_weights_only=True)，訓練完再把最佳權重讀回
 # trainer，然後另存一份「純模型」的 ta_model — 這份是普通的 functional model，
 # 之後 load_model() 一定讀得回來。
-ta_checkpoint_cb = tf.keras.callbacks.ModelCheckpoint(
+# ⚠️ 修正處：ta_trainer 沒有 call()，無法直接用 ModelCheckpoint(save_weights_only=True)
+# 存整個 trainer。改成用上面定義的 callback，直接存 ta_model（已經 built 好的內部模型）。
+ta_checkpoint_cb = SaveBestInnerModelWeights(
+    inner_model=ta_model,
     filepath=os.path.join(OUTPUT_DIR, 'best_ta.weights.h5'),
     monitor='val_loss',
-    save_best_only=True,
-    save_weights_only=True,
     mode='min',
-    verbose=1
 )
 
 print("\n--- Stage 1: 開始訓練 TA (ResNet20) ---")
@@ -430,8 +460,8 @@ ta_history = ta_trainer.fit(
 )
 print("\n--- Stage 1 訓練完成 ---")
 
-# 把訓練過程中最好的權重讀回來，再另存成「純模型」檔案
-ta_trainer.load_weights(os.path.join(OUTPUT_DIR, 'best_ta.weights.h5'))
+# 把訓練過程中最好的權重讀回 ta_model 本身，再另存成「純模型」檔案
+ta_model.load_weights(os.path.join(OUTPUT_DIR, 'best_ta.weights.h5'))
 ta_model.save(os.path.join(OUTPUT_DIR, 'best_ta_model.keras'))
 print("✓ TA 模型已儲存！")
 
@@ -457,13 +487,12 @@ print(f"  Alpha (Hard loss 權重): {ALPHA}")
 print(f"  訓練輪數: {NUM_EPOCHS}")
 
 # ⚠️ 同樣的修正：這裡也改成只存權重，訓練完再另存純模型
-student_checkpoint_cb = tf.keras.callbacks.ModelCheckpoint(
+# ⚠️ 同樣的修正：改存 student_model 本身，不是 student_trainer 外殼
+student_checkpoint_cb = SaveBestInnerModelWeights(
+    inner_model=student_model,
     filepath=os.path.join(OUTPUT_DIR, 'best_student.weights.h5'),
     monitor='val_loss',
-    save_best_only=True,
-    save_weights_only=True,
     mode='min',
-    verbose=1
 )
 
 print("\n--- Stage 2: 開始訓練 Student (CNN8) ---")
@@ -476,7 +505,7 @@ student_history = student_trainer.fit(
 )
 print("\n--- Stage 2 訓練完成 ---")
 
-student_trainer.load_weights(os.path.join(OUTPUT_DIR, 'best_student.weights.h5'))
+student_model.load_weights(os.path.join(OUTPUT_DIR, 'best_student.weights.h5'))
 student_model.save(os.path.join(OUTPUT_DIR, 'best_student_model.keras'))
 print("✓ 學生模型已儲存！")
 
