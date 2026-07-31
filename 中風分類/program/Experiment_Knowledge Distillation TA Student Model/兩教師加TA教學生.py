@@ -54,6 +54,16 @@ OUTPUT_DIR    = r"teacher ta_distillation_result"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 print(f"✓ 輸出資料夾: {OUTPUT_DIR}")
 
+# 資料 pipeline 統一用這個尺寸 (flow_from_dataframe 的 target_size)
+PIPELINE_SIZE = 300
+
+# 各模型「原本訓練時」用的輸入尺寸；跟 PIPELINE_SIZE 不同的話，
+# get_pretrained_model() 會自動在模型前面加一層 Resizing 做轉換。
+# EfficientNetB0 預設吃 224x224，EfficientNetB3 / TA(ResNet20) 這裡是用 300x300 訓練的。
+TEACHER1_INPUT_SIZE = 300
+TEACHER2_INPUT_SIZE = 224   # <-- 找到問題的地方：B0 是 224x224，不是 300x300
+TA_INPUT_SIZE        = 300
+
 # ============================================================
 # 4. 資料載入 (data.py 對應區塊)
 # ============================================================
@@ -111,10 +121,29 @@ print(f"類別名稱: {CLASS_NAMES}")
 # ============================================================
 
 # --- Teacher / TA Model (都是已經訓練好、直接載入、凍結) ---
-def get_pretrained_model(model_path, name="model"):
+def get_pretrained_model(model_path, name="model",
+                          native_size=None, pipeline_size=PIPELINE_SIZE):
+    """
+    載入已訓練好的模型並凍結。
+    如果該模型原本訓練時的輸入尺寸 (native_size) 跟資料 pipeline 的尺寸
+    (pipeline_size) 不同，會自動包一層 Resizing，讓外部呼叫時永遠可以
+    直接餵 pipeline_size 的圖片，內部自動轉成該模型需要的尺寸。
+    """
     model = tf.keras.models.load_model(model_path)
     model.trainable = False
-    print(f"✓ {name} 載入完成: {model_path}")
+
+    if native_size is not None and native_size != pipeline_size:
+        wrapped_input = layers.Input(shape=(pipeline_size, pipeline_size, 3))
+        resized = layers.Resizing(native_size, native_size)(wrapped_input)
+        wrapped_output = model(resized, training=False)
+        model = models.Model(wrapped_input, wrapped_output,
+                              name=f"{model.name}_resized_wrapper")
+        model.trainable = False
+        print(f"✓ {name} 載入完成 (輸入自動從 {pipeline_size}x{pipeline_size} "
+              f"resize 成 {native_size}x{native_size}): {model_path}")
+    else:
+        print(f"✓ {name} 載入完成: {model_path}")
+
     return model
 
 # --- Student Model: CNN8 (8層卷積的簡易CNN) ---
@@ -136,10 +165,14 @@ def get_student_model(input_shape=(300, 300, 3), num_classes=3):
 
     return models.Model(inputs, outputs, name='CNN8_Student')
 
-teacher1_model = get_pretrained_model(TEACHER1_PATH, name="Teacher1 (EfficientNetB3)")
-teacher2_model = get_pretrained_model(TEACHER2_PATH, name="Teacher2 (EfficientNetB0)")
-ta_model       = get_pretrained_model(TA_PATH,       name="TA (ResNet20)")
-student_model  = get_student_model(num_classes=num_classes)
+teacher1_model = get_pretrained_model(TEACHER1_PATH, name="Teacher1 (EfficientNetB3)",
+                                       native_size=TEACHER1_INPUT_SIZE)
+teacher2_model = get_pretrained_model(TEACHER2_PATH, name="Teacher2 (EfficientNetB0)",
+                                       native_size=TEACHER2_INPUT_SIZE)
+ta_model       = get_pretrained_model(TA_PATH,       name="TA (ResNet20)",
+                                       native_size=TA_INPUT_SIZE)
+student_model  = get_student_model(num_classes=num_classes,
+                                    input_shape=(PIPELINE_SIZE, PIPELINE_SIZE, 3))
 
 # ============================================================
 # 6. 模型比較 (utils.py 對應區塊)

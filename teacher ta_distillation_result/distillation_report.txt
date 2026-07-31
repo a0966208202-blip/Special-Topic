@@ -1,0 +1,38 @@
+============================================================
+Multi-Source Knowledge Distillation Report
+Teacher1 (EfficientNetB3) + Teacher2 (EfficientNetB0) + TA (ResNet20) -> Student (CNN8)
+============================================================
+
+Teacher1 Accuracy: 95.41%
+Teacher2 Accuracy: 94.14%
+TA Accuracy:       91.73%
+Student Accuracy:  77.14%
+Performance Retention (vs best source): 80.85%
+
+Classification Report:
+              precision    recall  f1-score   support
+
+ Hemorrhagic       0.62      0.68      0.65       219
+    Ischemia       0.67      0.05      0.10       226
+      Normal       0.81      0.98      0.88       885
+
+    accuracy                           0.77      1330
+   macro avg       0.70      0.57      0.54      1330
+weighted avg       0.75      0.77      0.71      1330
+
+--- Additional Metrics (One-vs-Rest) ---
+Class: Hemorrhagic
+  Specificity: 0.9199
+  NPV:         0.9350
+Class: Ischemia
+  Specificity: 0.9946
+  NPV:         0.8369
+Class: Normal
+  Specificity: 0.5303
+  NPV:         0.9255
+
+--- ROC-AUC Scores ---
+  Hemorrhagic AUC: 0.9217
+  Ischemia AUC: 0.8909
+  Normal AUC: 0.9323
+  Micro-average AUC: 0.9230
