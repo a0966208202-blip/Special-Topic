@@ -295,7 +295,7 @@ ALPHA       = 0.7
 W_TEACHER1  = 1 / 3
 W_TEACHER2  = 1 / 3
 W_TA        = 1 / 3
-NUM_EPOCHS  = 10  # 建議 50+，示範可改 10
+NUM_EPOCHS  = 50  # 建議 50+，示範可改 10
 
 trainer = MultiSourceDistillationTrainer(
     student=student_model,
