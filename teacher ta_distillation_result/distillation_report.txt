@@ -1,38 +1,39 @@
 ============================================================
-Multi-Source Knowledge Distillation Report
-Teacher1 (EfficientNetB3) + Teacher2 (EfficientNetB0) + TA (ResNet20) -> Student (CNN8)
+Two-Stage, Three-Source Knowledge Distillation Report
+Stage 1: Teacher x2 (EfficientNet) -> TA (ResNet20)
+Stage 2: Teacher1 + Teacher2 + TA (¤T¨Ó·½) -> Student (CNN8)
 ============================================================
 
-Teacher1 Accuracy: 95.41%
-Teacher2 Accuracy: 94.14%
-TA Accuracy:       91.73%
-Student Accuracy:  93.46%
-Performance Retention (vs best source): 97.95%
+Teacher1 Accuracy: 96.17%
+Teacher2 Accuracy: 94.81%
+TA Accuracy:       84.59%
+Student Accuracy:  67.82%
+Performance Retention (vs best of 3 sources): 70.52%
 
 Classification Report:
               precision    recall  f1-score   support
 
- Hemorrhagic       0.93      0.87      0.90       219
-    Ischemia       0.90      0.84      0.87       226
-      Normal       0.94      0.98      0.96       885
+ Hemorrhagic       0.34      0.05      0.08       219
+    Ischemia       0.50      0.05      0.10       226
+      Normal       0.69      0.99      0.81       885
 
-    accuracy                           0.93      1330
-   macro avg       0.93      0.89      0.91      1330
-weighted avg       0.93      0.93      0.93      1330
+    accuracy                           0.68      1330
+   macro avg       0.51      0.36      0.33      1330
+weighted avg       0.60      0.68      0.57      1330
 
 --- Additional Metrics (One-vs-Rest) ---
 Class: Hemorrhagic
-  Specificity: 0.9874
-  NPV:         0.9742
+  Specificity: 0.9829
+  NPV:         0.8394
 Class: Ischemia
-  Specificity: 0.9819
-  NPV:         0.9670
+  Specificity: 0.9891
+  NPV:         0.8361
 Class: Normal
-  Specificity: 0.8809
-  NPV:         0.9492
+  Specificity: 0.1079
+  NPV:         0.9057
 
 --- ROC-AUC Scores ---
-  Hemorrhagic AUC: 0.9891
-  Ischemia AUC: 0.9764
-  Normal AUC: 0.9850
-  Micro-average AUC: 0.9884
+  Hemorrhagic AUC: 0.7278
+  Ischemia AUC: 0.7931
+  Normal AUC: 0.8024
+  Micro-average AUC: 0.8562
