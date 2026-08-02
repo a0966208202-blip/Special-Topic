@@ -411,7 +411,7 @@ class SaveBestInnerModelWeights(tf.keras.callbacks.Callback):
 # ============================================================
 TEMPERATURE = 3.0
 ALPHA       = 0.7
-NUM_EPOCHS  = 10  # 建議 50+，示範可改 10
+NUM_EPOCHS  = 50  # 建議 50+，示範可改 10
 
 # Stage 1 用: 兩個 teacher 各自的權重 (可依各自準確率調整)
 STAGE1_W_TEACHER1 = 0.6
@@ -680,7 +680,7 @@ with open(report_path, 'w') as f:
     f.write("=" * 60 + "\n")
     f.write("Two-Stage, Three-Source Knowledge Distillation Report\n")
     f.write("Stage 1: Teacher x2 (EfficientNet) -> TA (ResNet20)\n")
-    f.write("Stage 2: Teacher1 + Teacher2 + TA (三來源) -> Student (CNN8)\n")
+    f.write("Stage 2: Teacher1 + Teacher2 + TA  -> Student (CNN8)\n")
     f.write("=" * 60 + "\n\n")
     f.write(f"Teacher1 Accuracy: {teacher1_acc*100:.2f}%\n")
     f.write(f"Teacher2 Accuracy: {teacher2_acc*100:.2f}%\n")
