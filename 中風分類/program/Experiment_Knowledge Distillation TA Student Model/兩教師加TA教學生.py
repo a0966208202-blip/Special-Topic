@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-CT Scan Classification - Multi-Source Knowledge Distillation
-Teacher1 (EfficientNetB3) + Teacher2 (EfficientNetB0) + TA (ResNet20)
-    → 同時指導 →  Student (CNN8)
+CT Scan Classification - Two-Stage, Three-Source Knowledge Distillation
+Stage 1: Teacher1 (EfficientNetB3) + Teacher2 (EfficientNetB0) -> TA (ResNet20)
+Stage 2: Teacher1 + Teacher2 + TA (三個來源同時)         -> Student (CNN8)
 任務: 3分類 (Normal / Ischemia / Hemorrhagic)
 """
 
@@ -49,25 +49,25 @@ print(f"使用裝置: {device_name if device_name else '/CPU:0'}")
 DATA_DIR      = r'archive\Brain_Stroke_CT_Dataset'
 TEACHER1_PATH = r"C:\Users\User\OneDrive\Desktop\Special Topic\b3_result\best_finetuned_model.keras"
 TEACHER2_PATH = r"C:\Users\User\OneDrive\Desktop\Special Topic\result\best_finetuned_model.keras"
-TA_PATH       = r"C:\Users\User\OneDrive\Desktop\Special Topic\ta_distillation_result\best_ta_model.keras"
 OUTPUT_DIR    = r"teacher ta_distillation_result"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 print(f"✓ 輸出資料夾: {OUTPUT_DIR}")
 
-# 資料 pipeline 統一用這個尺寸 (flow_from_dataframe 的 target_size)
-PIPELINE_SIZE = 300
-
-# 各模型「原本訓練時」用的輸入尺寸；跟 PIPELINE_SIZE 不同的話，
-# get_pretrained_model() 會自動在模型前面加一層 Resizing 做轉換。
-# EfficientNetB0 預設吃 224x224，EfficientNetB3 / TA(ResNet20) 這裡是用 300x300 訓練的。
-TEACHER1_INPUT_SIZE = 300
-TEACHER2_INPUT_SIZE = 224   # <-- 找到問題的地方：B0 是 224x224，不是 300x300
-TA_INPUT_SIZE        = 300
-
 # ============================================================
 # 4. 資料載入 (data.py 對應區塊)
 # ============================================================
-def get_ct_dataloaders(data_dir, batch_size=32):
+# 沿用 doc2 的作法：同一張圖一次讀進來，resize 成三種尺寸
+# (teacher1 / teacher2 / student-size)，確保三者對應同一張圖、同一個 label。
+# TA 和 Student 兩個模型都吃 student_size 那份。
+
+TEACHER1_SIZE = (300, 300)   # EfficientNetB3
+TEACHER2_SIZE = (224, 224)   # EfficientNetB0，換成你實際的 teacher2 解析度
+STUDENT_SIZE  = (300, 300)   # TA (ResNet20) / Student (CNN8) 共用的尺寸
+
+def get_ct_dataloaders(data_dir, batch_size=32,
+                        teacher1_size=TEACHER1_SIZE,
+                        teacher2_size=TEACHER2_SIZE,
+                        student_size=STUDENT_SIZE):
     ischemia_path    = os.path.join(data_dir, 'Ischemia',    'PNG')
     hemorrhagic_path = os.path.join(data_dir, 'Hemorrhagic', 'PNG')
     normal_path      = os.path.join(data_dir, 'Normal',      'PNG')
@@ -81,7 +81,6 @@ def get_ct_dataloaders(data_dir, batch_size=32):
 
     df = pd.DataFrame({"Image_path": imgs, "Label": labels})
 
-    # 切分：train 64% / val 16% / test 20%
     train_df, test_df = train_test_split(
         df, test_size=0.2, random_state=42, stratify=df['Label'])
     train_df, val_df  = train_test_split(
@@ -89,127 +88,226 @@ def get_ct_dataloaders(data_dir, batch_size=32):
 
     print(f"\n資料分布：Train={len(train_df)}, Val={len(val_df)}, Test={len(test_df)}")
 
-    datagen = ImageDataGenerator(preprocessing_function=preprocess_input)
+    class_names = sorted(df['Label'].unique())
+    label_to_idx = {name: i for i, name in enumerate(class_names)}
 
-    train_loader = datagen.flow_from_dataframe(
-        train_df, x_col='Image_path', y_col='Label',
-        target_size=(300, 300), batch_size=batch_size,
-        class_mode='categorical', shuffle=True)
+    def make_dataset(sub_df, shuffle):
+        paths = sub_df['Image_path'].values
+        label_idx = sub_df['Label'].map(label_to_idx).values
 
-    val_loader = datagen.flow_from_dataframe(
-        val_df, x_col='Image_path', y_col='Label',
-        target_size=(300, 300), batch_size=batch_size,
-        class_mode='categorical', shuffle=False)
+        def load_and_preprocess(path, label):
+            img_raw = tf.io.read_file(path)
+            img = tf.image.decode_png(img_raw, channels=3)
+            img = tf.cast(img, tf.float32)
 
-    test_loader = datagen.flow_from_dataframe(
-        test_df, x_col='Image_path', y_col='Label',
-        target_size=(300, 300), batch_size=batch_size,
-        class_mode='categorical', shuffle=False)
+            img_t1 = preprocess_input(tf.image.resize(img, teacher1_size))
+            img_t2 = preprocess_input(tf.image.resize(img, teacher2_size))
+            img_s  = preprocess_input(tf.image.resize(img, student_size))
 
-    return train_loader, val_loader, test_loader, len(train_df), 3
+            label_onehot = tf.one_hot(label, depth=len(class_names))
+            return (img_t1, img_t2, img_s), label_onehot
 
-train_loader, val_loader, test_loader, train_size, num_classes = get_ct_dataloaders(
+        ds = tf.data.Dataset.from_tensor_slices((paths, label_idx))
+        if shuffle:
+            ds = ds.shuffle(buffer_size=len(paths), seed=42)
+        ds = ds.map(load_and_preprocess, num_parallel_calls=tf.data.AUTOTUNE)
+        ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+        return ds
+
+    train_ds = make_dataset(train_df, shuffle=True)
+    val_ds   = make_dataset(val_df,   shuffle=False)
+    test_ds  = make_dataset(test_df,  shuffle=False)
+
+    test_labels = test_df['Label'].map(label_to_idx).values
+
+    return train_ds, val_ds, test_ds, len(train_df), class_names, test_labels
+
+train_loader, val_loader, test_loader, train_size, CLASS_NAMES, test_labels = get_ct_dataloaders(
     data_dir=DATA_DIR, batch_size=32)
 
+num_classes = len(CLASS_NAMES)
 print(f"類別數: {num_classes}")
 print(f"訓練樣本: {train_size}")
-CLASS_NAMES = list(train_loader.class_indices.keys())
 print(f"類別名稱: {CLASS_NAMES}")
 
 # ============================================================
 # 5. 模型定義 (models.py 對應區塊)
 # ============================================================
 
-# --- Teacher / TA Model (都是已經訓練好、直接載入、凍結) ---
-def get_pretrained_model(model_path, name="model",
-                          native_size=None, pipeline_size=PIPELINE_SIZE):
-    """
-    載入已訓練好的模型並凍結。
-    如果該模型原本訓練時的輸入尺寸 (native_size) 跟資料 pipeline 的尺寸
-    (pipeline_size) 不同，會自動包一層 Resizing，讓外部呼叫時永遠可以
-    直接餵 pipeline_size 的圖片，內部自動轉成該模型需要的尺寸。
-    """
+def get_teacher_model(model_path):
     model = tf.keras.models.load_model(model_path)
     model.trainable = False
-
-    if native_size is not None and native_size != pipeline_size:
-        wrapped_input = layers.Input(shape=(pipeline_size, pipeline_size, 3))
-        resized = layers.Resizing(native_size, native_size)(wrapped_input)
-        wrapped_output = model(resized, training=False)
-        model = models.Model(wrapped_input, wrapped_output,
-                              name=f"{model.name}_resized_wrapper")
-        model.trainable = False
-        print(f"✓ {name} 載入完成 (輸入自動從 {pipeline_size}x{pipeline_size} "
-              f"resize 成 {native_size}x{native_size}): {model_path}")
-    else:
-        print(f"✓ {name} 載入完成: {model_path}")
-
+    print(f"✓ Teacher 模型載入完成: {model_path}")
     return model
 
-# --- Student Model: CNN8 (8層卷積的簡易CNN) ---
-def get_student_model(input_shape=(300, 300, 3), num_classes=3):
-    inputs = layers.Input(shape=input_shape)
+def resnet_block(x, filters, kernel_size=3, stride=1, use_shortcut=False):
+    shortcut = x
+    x = layers.Conv2D(filters, kernel_size, strides=stride,
+                      padding='same', use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
+    x = layers.Conv2D(filters, kernel_size, strides=1,
+                      padding='same', use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    if use_shortcut or stride != 1:
+        shortcut = layers.Conv2D(filters, 1, strides=stride,
+                                 padding='same', use_bias=False)(shortcut)
+        shortcut = layers.BatchNormalization()(shortcut)
+    x = layers.Add()([x, shortcut])
+    x = layers.ReLU()(x)
+    return x
 
-    x = inputs
-    filters_seq = [16, 16, 32, 32, 64, 64, 128, 128]  # 共 8 層 Conv
-    for i, f in enumerate(filters_seq):
-        x = layers.Conv2D(f, 3, padding='same', use_bias=False)(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.ReLU()(x)
-        if i % 2 == 1:  # 每兩層 conv 做一次下採樣
-            x = layers.MaxPooling2D(2, padding='same')(x)
+def get_ta_model(input_shape=STUDENT_SIZE + (3,), num_classes=3):
+    inputs = layers.Input(shape=input_shape)
+    x = layers.Conv2D(32, 3, strides=2, padding='same', use_bias=False)(inputs)
+    x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
+    x = layers.MaxPooling2D(3, strides=2, padding='same')(x)
+
+    x = resnet_block(x, 16, use_shortcut=True)
+    x = resnet_block(x, 16)
+    x = resnet_block(x, 16)
+
+    x = resnet_block(x, 32, stride=2, use_shortcut=True)
+    x = resnet_block(x, 32)
+    x = resnet_block(x, 32)
+
+    x = resnet_block(x, 64, stride=2, use_shortcut=True)
+    x = resnet_block(x, 64)
+    x = resnet_block(x, 64)
 
     x = layers.GlobalAveragePooling2D()(x)
     x = layers.Dropout(0.3)(x)
-    outputs = layers.Dense(num_classes)(x)   # 輸出 logits (不加 softmax)，配合 from_logits=True
+    outputs = layers.Dense(num_classes)(x)
+    return models.Model(inputs, outputs, name='ResNet20_TA')
 
+def get_student_model(input_shape=STUDENT_SIZE + (3,), num_classes=3):
+    inputs = layers.Input(shape=input_shape)
+    x = layers.Conv2D(16, 3, padding='same', use_bias=False)(inputs)
+    x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
+    x = layers.MaxPooling2D()(x)
+
+    x = layers.Conv2D(32, 3, padding='same', use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
+    x = layers.MaxPooling2D()(x)
+
+    x = layers.Conv2D(64, 3, padding='same', use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
+    x = layers.MaxPooling2D()(x)
+
+    x = layers.Conv2D(128, 3, padding='same', use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
+    x = layers.GlobalAveragePooling2D()(x)
+
+    x = layers.Dense(64, activation='relu')(x)
+    x = layers.Dropout(0.3)(x)
+    outputs = layers.Dense(num_classes)(x)
     return models.Model(inputs, outputs, name='CNN8_Student')
 
-teacher1_model = get_pretrained_model(TEACHER1_PATH, name="Teacher1 (EfficientNetB3)",
-                                       native_size=TEACHER1_INPUT_SIZE)
-teacher2_model = get_pretrained_model(TEACHER2_PATH, name="Teacher2 (EfficientNetB0)",
-                                       native_size=TEACHER2_INPUT_SIZE)
-ta_model       = get_pretrained_model(TA_PATH,       name="TA (ResNet20)",
-                                       native_size=TA_INPUT_SIZE)
-student_model  = get_student_model(num_classes=num_classes,
-                                    input_shape=(PIPELINE_SIZE, PIPELINE_SIZE, 3))
+teacher1_model = get_teacher_model(TEACHER1_PATH)
+teacher2_model = get_teacher_model(TEACHER2_PATH)
+ta_model       = get_ta_model(num_classes=num_classes)
+student_model  = get_student_model(num_classes=num_classes)
 
 # ============================================================
-# 6. 模型比較 (utils.py 對應區塊)
+# 6. 模型比較
 # ============================================================
-def compare_models(teacher1, teacher2, ta, student):
-    t1_params = teacher1.count_params()
-    t2_params = teacher2.count_params()
-    ta_params = ta.count_params()
-    s_params  = student.count_params()
-
+def compare_models(named_models):
     print("=" * 60)
     print("模型參數比較")
     print("=" * 60)
-    print(f"Teacher1 (EfficientNetB3): {t1_params:,} 個參數")
-    print(f"Teacher2 (EfficientNetB0): {t2_params:,} 個參數")
-    print(f"TA (ResNet20):             {ta_params:,} 個參數")
-    print(f"Student (CNN8):            {s_params:,} 個參數")
-    print(f"Student 相對 Teacher1 壓縮比例: {t1_params / s_params:.2f}x")
-    print(f"Student 相對 Teacher2 壓縮比例: {t2_params / s_params:.2f}x")
-    print(f"Student 相對 TA 壓縮比例:       {ta_params / s_params:.2f}x")
+    base_params = None
+    for name, model in named_models.items():
+        p = model.count_params()
+        if base_params is None:
+            base_params = p
+        print(f"{name}: {p:,} 個參數 ({100*p/base_params:.2f}% of {list(named_models.keys())[0]})")
     print("=" * 60)
 
-compare_models(teacher1_model, teacher2_model, ta_model, student_model)
+compare_models({
+    "Teacher1 (EfficientNetB3)": teacher1_model,
+    "Teacher2 (EfficientNetB0)": teacher2_model,
+    "TA (ResNet20)": ta_model,
+    "Student (CNN8)": student_model,
+})
 
 # ============================================================
-# 7. 多來源知識蒸餾訓練 (distillation.py 對應區塊)
+# 7. 知識蒸餾 Trainer 定義 (distillation.py 對應區塊)
 # ============================================================
-# 設計說明:
-#   Teacher1、Teacher2、TA 三個「已凍結」的模型在同一個 train_step 裡
-#   同時對 Student 算 KD loss (各自KLDivergence)，再依權重加總，
-#   不是先訓練TA再單獨訓練Student的兩階段做法。
-#
-#   loss = ALPHA * student_loss
-#        + (1 - ALPHA) * (W_T1*KD_t1 + W_T2*KD_t2 + W_TA*KD_ta) * T^2
-#
-#   W_T1 + W_T2 + W_TA = 1，預設平均分配 (各1/3)，之後可依實驗調整。
-class MultiSourceDistillationTrainer(tf.keras.Model):
+
+# --- Stage 1: 2 個 Teacher -> TA (與 doc2 相同，不變) ---
+class MultiTeacherDistillationTrainer(tf.keras.Model):
+    def __init__(self, student, teachers, teacher_weights=None):
+        super().__init__()
+        self.student = student
+        self.teachers = teachers  # [teacher1_model, teacher2_model]
+        n = len(teachers)
+        self.teacher_weights = teacher_weights or [1.0 / n] * n
+
+    def compile(self, optimizer, alpha, temperature):
+        super().compile(
+            optimizer=optimizer,
+            metrics=[tf.keras.metrics.CategoricalAccuracy(name="accuracy")],
+            run_eagerly=True
+        )
+        self.alpha = alpha
+        self.temperature = temperature
+        self.student_loss_fn = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
+        self.distillation_loss_fn = tf.keras.losses.KLDivergence()
+
+    def _ensemble_teacher_soft(self, x_t1, x_t2):
+        soft = 0.0
+        inputs_per_teacher = [x_t1, x_t2]
+        for w, teacher, x_i in zip(self.teacher_weights, self.teachers, inputs_per_teacher):
+            teacher_preds = teacher(x_i, training=False)
+            soft += w * tf.nn.softmax(teacher_preds / self.temperature, axis=1)
+        return soft
+
+    def train_step(self, data):
+        (x_t1, x_t2, x_student), y = data
+
+        teacher_soft = self._ensemble_teacher_soft(x_t1, x_t2)
+
+        with tf.GradientTape() as tape:
+            student_preds = self.student(x_student, training=True)
+            student_loss = self.student_loss_fn(y, student_preds)
+            distillation_loss = self.distillation_loss_fn(
+                teacher_soft,
+                tf.nn.softmax(student_preds / self.temperature, axis=1)
+            )
+            loss = (self.alpha * student_loss +
+                    (1 - self.alpha) * distillation_loss * (self.temperature ** 2))
+
+        gradients = tape.gradient(loss, self.student.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.student.trainable_variables))
+        self.compiled_metrics.update_state(y, tf.nn.softmax(student_preds, axis=1))
+
+        results = {m.name: m.result() for m in self.metrics}
+        results['loss'] = loss
+        return results
+
+    def test_step(self, data):
+        (x_t1, x_t2, x_student), y = data
+        student_preds = self.student(x_student, training=False)
+        student_loss = tf.keras.losses.CategoricalCrossentropy(from_logits=True)(y, student_preds)
+        self.compiled_metrics.update_state(y, tf.nn.softmax(student_preds, axis=1))
+        results = {m.name: m.result() for m in self.metrics}
+        results['loss'] = student_loss
+        return results
+
+    def get_config(self):
+        return {}
+
+
+# --- Stage 2 (改版重點): Teacher1 + Teacher2 + TA 三個來源同時 -> Student ---
+# 沿用 doc1 的 loss 設計 (三路 KD 各自算再加權加總)，
+# 但改用 doc2 的三解析度 data pipeline: teacher1 吃 x_t1、teacher2 吃 x_t2、
+# TA 和 Student 都吃 x_student (因為 TA 訓練時就是用 student_size)。
+class ThreeSourceDistillationTrainer(tf.keras.Model):
     def __init__(self, student, teacher1, teacher2, ta,
                  w_teacher1=1/3, w_teacher2=1/3, w_ta=1/3):
         super().__init__()
@@ -233,20 +331,16 @@ class MultiSourceDistillationTrainer(tf.keras.Model):
         self.distillation_loss_fn = tf.keras.losses.KLDivergence()
 
     def train_step(self, data):
-        x, y = data
+        (x_t1, x_t2, x_student), y = data
 
-        # 三個指導來源預測 (不訓練)
-        t1_preds = self.teacher1(x, training=False)
-        t2_preds = self.teacher2(x, training=False)
-        ta_preds = self.ta(x, training=False)
+        t1_preds = self.teacher1(x_t1, training=False)
+        t2_preds = self.teacher2(x_t2, training=False)
+        ta_preds = self.ta(x_student, training=False)   # TA 吃 student_size
 
         with tf.GradientTape() as tape:
-            student_preds = self.student(x, training=True)
+            student_preds = self.student(x_student, training=True)
 
-            # Hard loss: 學生 vs 真實標籤
             student_loss = self.student_loss_fn(y, student_preds)
-
-            # Soft loss: 學生 分別 vs 三個來源 (用溫度軟化後算 KLDivergence)
             student_soft = tf.nn.softmax(student_preds / self.temperature, axis=1)
 
             kd_t1 = self.distillation_loss_fn(
@@ -260,13 +354,11 @@ class MultiSourceDistillationTrainer(tf.keras.Model):
                                   + self.w_teacher2 * kd_t2
                                   + self.w_ta * kd_ta)
 
-            # 總損失
             loss = (self.alpha * student_loss +
                     (1 - self.alpha) * distillation_loss * (self.temperature ** 2))
 
         gradients = tape.gradient(loss, self.student.trainable_variables)
-        self.optimizer.apply_gradients(
-            zip(gradients, self.student.trainable_variables))
+        self.optimizer.apply_gradients(zip(gradients, self.student.trainable_variables))
         self.compiled_metrics.update_state(y, tf.nn.softmax(student_preds, axis=1))
 
         results = {m.name: m.result() for m in self.metrics}
@@ -276,8 +368,8 @@ class MultiSourceDistillationTrainer(tf.keras.Model):
         return results
 
     def test_step(self, data):
-        x, y = data
-        student_preds = self.student(x, training=False)
+        (_x_t1, _x_t2, x_student), y = data
+        student_preds = self.student(x_student, training=False)
         student_loss = tf.keras.losses.CategoricalCrossentropy(from_logits=True)(y, student_preds)
         self.compiled_metrics.update_state(y, tf.nn.softmax(student_preds, axis=1))
         results = {m.name: m.result() for m in self.metrics}
@@ -287,76 +379,143 @@ class MultiSourceDistillationTrainer(tf.keras.Model):
     def get_config(self):
         return {}
 
+
 # ============================================================
-# 8. 蒸餾設定與訓練
+# 7b. Callback：存「內部真正的模型」權重，不是整個 Trainer 外殼
+# ============================================================
+class SaveBestInnerModelWeights(tf.keras.callbacks.Callback):
+    def __init__(self, inner_model, filepath, monitor='val_loss', mode='min'):
+        super().__init__()
+        self.inner_model = inner_model
+        self.filepath = filepath
+        self.monitor = monitor
+        self.mode = mode
+        self.best = float('inf') if mode == 'min' else -float('inf')
+
+    def on_epoch_end(self, epoch, logs=None):
+        current = (logs or {}).get(self.monitor)
+        if current is None:
+            return
+        improved = (current < self.best) if self.mode == 'min' else (current > self.best)
+        if improved:
+            print(f"\nEpoch {epoch + 1}: {self.monitor} improved from {self.best:.5f} to "
+                  f"{current:.5f}, saving model to {self.filepath}")
+            self.best = current
+            self.inner_model.save_weights(self.filepath)
+        else:
+            print(f"\nEpoch {epoch + 1}: {self.monitor} did not improve from {self.best:.5f}")
+
+
+# ============================================================
+# 8. Stage 1 訓練: 2 個 Teacher -> TA
 # ============================================================
 TEMPERATURE = 3.0
 ALPHA       = 0.7
-W_TEACHER1  = 1 / 3
-W_TEACHER2  = 1 / 3
-W_TA        = 1 / 3
-NUM_EPOCHS  = 50  # 建議 50+，示範可改 10
+NUM_EPOCHS  = 10  # 建議 50+，示範可改 10
 
-trainer = MultiSourceDistillationTrainer(
-    student=student_model,
-    teacher1=teacher1_model, teacher2=teacher2_model, ta=ta_model,
-    w_teacher1=W_TEACHER1, w_teacher2=W_TEACHER2, w_ta=W_TA,
+# Stage 1 用: 兩個 teacher 各自的權重 (可依各自準確率調整)
+STAGE1_W_TEACHER1 = 0.6
+STAGE1_W_TEACHER2 = 0.4
+
+# Stage 2 用: 三個來源的權重 — TA 給比較高的權重
+# (TAKD 的核心論點：TA 容量介於中間，訊號比大 Teacher 更貼近 Student 能吸收的範圍)
+STAGE2_W_TEACHER1 = 0.25
+STAGE2_W_TEACHER2 = 0.25
+STAGE2_W_TA       = 0.50
+
+ta_trainer = MultiTeacherDistillationTrainer(
+    student=ta_model,
+    teachers=[teacher1_model, teacher2_model],
+    teacher_weights=[STAGE1_W_TEACHER1, STAGE1_W_TEACHER2],
 )
-trainer.compile(
+ta_trainer.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
     alpha=ALPHA,
     temperature=TEMPERATURE
 )
 
-print(f"\n多來源知識蒸餾配置：")
+print(f"\nStage 1 知識蒸餾配置 (Teacher x2 -> TA)：")
 print(f"  溫度參數 (Temperature): {TEMPERATURE}")
 print(f"  Alpha (Hard loss 權重): {ALPHA}")
-print(f"  三來源權重: Teacher1={W_TEACHER1:.2f}, Teacher2={W_TEACHER2:.2f}, TA={W_TA:.2f}")
+print(f"  Teacher 權重: Teacher1={STAGE1_W_TEACHER1}, Teacher2={STAGE1_W_TEACHER2}")
 print(f"  訓練輪數: {NUM_EPOCHS}")
 
-# Checkpoint 儲存最佳模型 (只存 student 子模型,避免存到整個 Trainer)
-class SaveBestStudentCallback(tf.keras.callbacks.Callback):
-    def __init__(self, filepath, monitor='val_loss', mode='min'):
-        super().__init__()
-        self.filepath = filepath
-        self.monitor = monitor
-        self.mode = mode
-        self.best = np.inf if mode == 'min' else -np.inf
-
-    def on_epoch_end(self, epoch, logs=None):
-        current = logs.get(self.monitor)
-        if current is None:
-            return
-        improved = (current < self.best) if self.mode == 'min' else (current > self.best)
-        if improved:
-            self.best = current
-            self.model.student.save(self.filepath)
-            print(f"\nEpoch {epoch+1}: {self.monitor} improved to {current:.4f}, saving student model to {self.filepath}")
-
-checkpoint_cb = SaveBestStudentCallback(
-    filepath=os.path.join(OUTPUT_DIR, 'best_student_model.keras'),
+ta_checkpoint_cb = SaveBestInnerModelWeights(
+    inner_model=ta_model,
+    filepath=os.path.join(OUTPUT_DIR, 'best_ta.weights.h5'),
     monitor='val_loss',
-    mode='min'
+    mode='min',
 )
 
-print("\n--- 開始多來源知識蒸餾訓練 (Teacher1 + Teacher2 + TA 同時指導 Student) ---")
-history = trainer.fit(
+print("\n--- Stage 1: 開始訓練 TA (ResNet20) ---")
+ta_history = ta_trainer.fit(
     train_loader,
     validation_data=val_loader,
     epochs=NUM_EPOCHS,
-    callbacks=[checkpoint_cb],
+    callbacks=[ta_checkpoint_cb],
     verbose=1
 )
-print("\n--- 訓練完成 ---")
+print("\n--- Stage 1 訓練完成 ---")
 
-# 儲存最終學生模型
-student_model.save(os.path.join(OUTPUT_DIR, 'student_model_distilled.keras'))
+ta_model.load_weights(os.path.join(OUTPUT_DIR, 'best_ta.weights.h5'))
+ta_model.save(os.path.join(OUTPUT_DIR, 'best_ta_model.keras'))
+print("✓ TA 模型已儲存！")
+
+# ============================================================
+# 9. Stage 2 訓練: Teacher1 + Teacher2 + TA (三來源) -> Student (CNN8)
+# ============================================================
+print("\n--- 載入最佳 TA 模型，作為 Stage 2 的其中一個指導來源 ---")
+best_ta_path = os.path.join(OUTPUT_DIR, 'best_ta_model.keras')
+best_ta_model = tf.keras.models.load_model(best_ta_path)
+best_ta_model.trainable = False
+print(f"✓ 已載入最佳 TA 模型: {best_ta_path}")
+
+student_trainer = ThreeSourceDistillationTrainer(
+    student=student_model,
+    teacher1=teacher1_model,
+    teacher2=teacher2_model,
+    ta=best_ta_model,
+    w_teacher1=STAGE2_W_TEACHER1,
+    w_teacher2=STAGE2_W_TEACHER2,
+    w_ta=STAGE2_W_TA,
+)
+student_trainer.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+    alpha=ALPHA,
+    temperature=TEMPERATURE
+)
+
+print(f"\nStage 2 知識蒸餾配置 (Teacher1 + Teacher2 + TA -> Student)：")
+print(f"  溫度參數 (Temperature): {TEMPERATURE}")
+print(f"  Alpha (Hard loss 權重): {ALPHA}")
+print(f"  三來源權重: Teacher1={STAGE2_W_TEACHER1}, Teacher2={STAGE2_W_TEACHER2}, TA={STAGE2_W_TA}")
+print(f"  訓練輪數: {NUM_EPOCHS}")
+
+student_checkpoint_cb = SaveBestInnerModelWeights(
+    inner_model=student_model,
+    filepath=os.path.join(OUTPUT_DIR, 'best_student.weights.h5'),
+    monitor='val_loss',
+    mode='min',
+)
+
+print("\n--- Stage 2: 開始訓練 Student (CNN8) ---")
+student_history = student_trainer.fit(
+    train_loader,
+    validation_data=val_loader,
+    epochs=NUM_EPOCHS,
+    callbacks=[student_checkpoint_cb],
+    verbose=1
+)
+print("\n--- Stage 2 訓練完成 ---")
+
+student_model.load_weights(os.path.join(OUTPUT_DIR, 'best_student.weights.h5'))
+student_model.save(os.path.join(OUTPUT_DIR, 'best_student_model.keras'))
 print("✓ 學生模型已儲存！")
 
 # ============================================================
-# 9. 繪製訓練曲線 (utils.py - plot_training_curves)
+# 10. 繪製訓練曲線
 # ============================================================
-def plot_training_curves(history, save_dir):
+def plot_training_curves(history, save_dir, tag):
     acc  = history.history['accuracy']
     loss = history.history['loss']
     val_loss = history.history['val_loss']
@@ -366,7 +525,7 @@ def plot_training_curves(history, save_dir):
     plt.subplot(1, 2, 1)
     plt.plot(acc, label='Train Accuracy')
     plt.legend(loc='lower right')
-    plt.title('Training Accuracy')
+    plt.title(f'{tag} - Training Accuracy')
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy')
 
@@ -374,48 +533,53 @@ def plot_training_curves(history, save_dir):
     plt.plot(loss, label='Train Loss')
     plt.plot(val_loss, label='Val Loss')
     plt.legend(loc='upper right')
-    plt.title('Training & Validation Loss')
+    plt.title(f'{tag} - Training & Validation Loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
 
     plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, 'training_curves.png'))
+    plt.savefig(os.path.join(save_dir, f'training_curves_{tag}.png'))
     plt.close()
-    print(f"✓ 訓練曲線已儲存")
+    print(f"✓ {tag} 訓練曲線已儲存")
 
-plot_training_curves(history, OUTPUT_DIR)
+plot_training_curves(ta_history, OUTPUT_DIR, tag='stage1_TA')
+plot_training_curves(student_history, OUTPUT_DIR, tag='stage2_Student')
 
 # ============================================================
-# 10. 完整評估 (含 Specificity, NPV, ROC-AUC)
+# 11. 完整評估 (含 Specificity, NPV, ROC-AUC) — 針對最終 Student (CNN8)
 # ============================================================
 print("\n--- 載入最佳學生模型進行評估 ---")
 best_student_path = os.path.join(OUTPUT_DIR, 'best_student_model.keras')
 best_student = tf.keras.models.load_model(best_student_path)
 print(f"✓ 已載入最佳學生模型: {best_student_path}")
 
-# 取得預測結果
-y_pred_logits = best_student.predict(test_loader)
+test_loader_t1      = test_loader.map(lambda xs, y: (xs[0], y))
+test_loader_t2      = test_loader.map(lambda xs, y: (xs[1], y))
+test_loader_student = test_loader.map(lambda xs, y: (xs[2], y))
+
+y_true = test_labels
+n_classes = len(CLASS_NAMES)
+
+y_pred_logits = best_student.predict(test_loader_student.map(lambda x, y: x))
 y_pred_probs  = tf.nn.softmax(y_pred_logits, axis=1).numpy()
 y_pred        = np.argmax(y_pred_probs, axis=1)
-y_true        = test_loader.classes
-n_classes     = len(CLASS_NAMES)
 
-# --- Accuracy (Teacher1 / Teacher2 / TA / Student 全部比較) ---
+# --- Accuracy: Teacher1 / Teacher2 / TA / Student ---
 teacher1_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-_, teacher1_acc = teacher1_model.evaluate(test_loader, verbose=0)
+_, teacher1_acc = teacher1_model.evaluate(test_loader_t1, verbose=0)
 
 teacher2_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-_, teacher2_acc = teacher2_model.evaluate(test_loader, verbose=0)
+_, teacher2_acc = teacher2_model.evaluate(test_loader_t2, verbose=0)
 
-ta_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-_, ta_acc = ta_model.evaluate(test_loader, verbose=0)
+best_ta_model.compile(optimizer='adam',
+                       loss=tf.keras.losses.CategoricalCrossentropy(from_logits=True),
+                       metrics=['accuracy'])
+_, ta_acc = best_ta_model.evaluate(test_loader_student, verbose=0)
 
-best_student.compile(
-    optimizer='adam',
-    loss=tf.keras.losses.CategoricalCrossentropy(from_logits=True),
-    metrics=['accuracy']
-)
-_, student_acc = best_student.evaluate(test_loader, verbose=0)
+best_student.compile(optimizer='adam',
+                      loss=tf.keras.losses.CategoricalCrossentropy(from_logits=True),
+                      metrics=['accuracy'])
+_, student_acc = best_student.evaluate(test_loader_student, verbose=0)
 
 best_source_acc = max(teacher1_acc, teacher2_acc, ta_acc)
 
@@ -426,7 +590,7 @@ print(f"Teacher1 (EfficientNetB3) 準確率: {teacher1_acc*100:.2f}%")
 print(f"Teacher2 (EfficientNetB0) 準確率: {teacher2_acc*100:.2f}%")
 print(f"TA (ResNet20) 準確率:             {ta_acc*100:.2f}%")
 print(f"Student (CNN8) 準確率:            {student_acc*100:.2f}%")
-print(f"效能保留率 (相對最佳來源): {100 * student_acc / best_source_acc:.2f}%")
+print(f"效能保留率 (相對三來源中最佳者): {100 * student_acc / best_source_acc:.2f}%")
 print("=" * 60)
 
 # --- Classification Report ---
@@ -509,19 +673,20 @@ for i in range(n_classes):
 report_lines.append(f"  Micro-average AUC: {roc_auc['micro']:.4f}")
 
 # ============================================================
-# 11. 儲存完整報告
+# 12. 儲存完整報告
 # ============================================================
 report_path = os.path.join(OUTPUT_DIR, 'distillation_report.txt')
 with open(report_path, 'w') as f:
     f.write("=" * 60 + "\n")
-    f.write("Multi-Source Knowledge Distillation Report\n")
-    f.write("Teacher1 (EfficientNetB3) + Teacher2 (EfficientNetB0) + TA (ResNet20) -> Student (CNN8)\n")
+    f.write("Two-Stage, Three-Source Knowledge Distillation Report\n")
+    f.write("Stage 1: Teacher x2 (EfficientNet) -> TA (ResNet20)\n")
+    f.write("Stage 2: Teacher1 + Teacher2 + TA (三來源) -> Student (CNN8)\n")
     f.write("=" * 60 + "\n\n")
     f.write(f"Teacher1 Accuracy: {teacher1_acc*100:.2f}%\n")
     f.write(f"Teacher2 Accuracy: {teacher2_acc*100:.2f}%\n")
     f.write(f"TA Accuracy:       {ta_acc*100:.2f}%\n")
     f.write(f"Student Accuracy:  {student_acc*100:.2f}%\n")
-    f.write(f"Performance Retention (vs best source): {100 * student_acc / best_source_acc:.2f}%\n\n")
+    f.write(f"Performance Retention (vs best of 3 sources): {100 * student_acc / best_source_acc:.2f}%\n\n")
     f.write("Classification Report:\n")
     f.write(report)
     for line in report_lines:
