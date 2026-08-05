@@ -4,6 +4,8 @@ CT Scan Classification - Two-Stage, Three-Source Knowledge Distillation
 Stage 1: Teacher1 (EfficientNetB3) + Teacher2 (EfficientNetB0) -> TA (ResNet20)
 Stage 2: Teacher1 + Teacher2 + TA (三個來源同時)         -> Student (CNN8)
 任務: 3分類 (Normal / Ischemia / Hemorrhagic)
+更改CNN8的架構、新增信賴區間
+
 """
 
 # ============================================================
@@ -11,6 +13,7 @@ Stage 2: Teacher1 + Teacher2 + TA (三個來源同時)         -> Student (CNN8)
 # ============================================================
 
 import os
+import math
 import random
 import numpy as np
 import pandas as pd
@@ -183,12 +186,8 @@ def get_ta_model(input_shape=STUDENT_SIZE + (3,), num_classes=3):
 
 def get_student_model(input_shape=STUDENT_SIZE + (3,), num_classes=3):
     inputs = layers.Input(shape=input_shape)
-    x = layers.Conv2D(16, 3, padding='same', use_bias=False)(inputs)
-    x = layers.BatchNormalization()(x)
-    x = layers.ReLU()(x)
-    x = layers.MaxPooling2D()(x)
 
-    x = layers.Conv2D(32, 3, padding='same', use_bias=False)(x)
+    x = layers.Conv2D(32, 3, padding='same', use_bias=False)(inputs)
     x = layers.BatchNormalization()(x)
     x = layers.ReLU()(x)
     x = layers.MaxPooling2D()(x)
@@ -201,9 +200,25 @@ def get_student_model(input_shape=STUDENT_SIZE + (3,), num_classes=3):
     x = layers.Conv2D(128, 3, padding='same', use_bias=False)(x)
     x = layers.BatchNormalization()(x)
     x = layers.ReLU()(x)
-    x = layers.GlobalAveragePooling2D()(x)
+    x = layers.MaxPooling2D()(x)
 
-    x = layers.Dense(64, activation='relu')(x)
+    x = layers.Conv2D(128, 3, padding='same', use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
+    x = layers.MaxPooling2D()(x)
+
+    x = layers.Conv2D(256, 3, padding='same', use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
+    x = layers.MaxPooling2D()(x)
+
+
+    x = layers.Conv2D(512, 3, padding='same', use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
+    x = layers.GlobalAveragePooling2D()(x)  
+
+    x = layers.Dense(128, activation='relu')(x)
     x = layers.Dropout(0.3)(x)
     outputs = layers.Dense(num_classes)(x)
     return models.Model(inputs, outputs, name='CNN8_Student')
@@ -610,6 +625,25 @@ plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, 'confusion_matrix.png'))
 plt.close()
 print("✓ Confusion Matrix 已儲存")
+
+# --- Confidence Interval ---
+n = np.sum(cm)
+correct_predictions = np.trace(cm)
+accuracy = correct_predictions / n
+Z = 1.96 
+se = math.sqrt((accuracy * (1 - accuracy)) / n)
+ci_lower = accuracy - (Z * se)
+ci_upper = accuracy + (Z * se)
+ci_lower = max(0.0, ci_lower)
+ci_upper = min(1.0, ci_upper)
+
+print(" Confidence Interval (95% CI)")
+print("="*45)
+print(f"▸ 測試總樣本數 (n) : {n}")
+print(f"▸ 預測正確數量     : {correct_predictions}")
+print(f"▸ 模型準確率 (Acc) : {accuracy:.4f} ({accuracy*100:.2f}%)")
+print(f"▸ 95% 信賴區間     : [{ci_lower:.4f}, {ci_upper:.4f}]")
+print("-" * 45)
 
 # --- Specificity & NPV ---
 print("\n--- Specificity & NPV (per-class) ---")
