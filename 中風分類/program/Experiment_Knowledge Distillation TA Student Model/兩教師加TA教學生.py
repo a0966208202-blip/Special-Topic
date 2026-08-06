@@ -531,16 +531,18 @@ print("✓ 學生模型已儲存！")
 # 10. 繪製訓練曲線
 # ============================================================
 def plot_training_curves(history, save_dir, tag):
-    acc  = history.history['accuracy']
-    loss = history.history['loss']
+    acc      = history.history['accuracy']
+    val_acc  = history.history['val_accuracy']
+    loss     = history.history['loss']
     val_loss = history.history['val_loss']
 
     plt.figure(figsize=(12, 5))
 
     plt.subplot(1, 2, 1)
     plt.plot(acc, label='Train Accuracy')
+    plt.plot(val_acc, label='Validation Accuracy')
     plt.legend(loc='lower right')
-    plt.title(f'{tag} - Training Accuracy')
+    plt.title(f'{tag} - Training and Validation Accuracy')
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy')
 
