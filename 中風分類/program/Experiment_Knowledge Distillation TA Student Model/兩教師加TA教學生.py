@@ -650,6 +650,13 @@ print("\n--- Specificity & NPV (per-class) ---")
 specificities, npvs = [], []
 report_lines = ["\n--- Additional Metrics (One-vs-Rest) ---"]
 
+# 新增：把信賴區間寫進報告
+report_lines.append("\n--- 95% Confidence Interval ---")
+report_lines.append(f"測試總樣本數 (n): {n}")
+report_lines.append(f"預測正確數量: {correct_predictions}")
+report_lines.append(f"模型準確率 (Acc): {accuracy:.4f} ({accuracy*100:.2f}%)")
+report_lines.append(f"95% CI: [{ci_lower:.4f}, {ci_upper:.4f}]")
+
 for i in range(n_classes):
     FP = cm[:, i].sum() - cm[i, i]
     FN = cm[i, :].sum() - cm[i, i]
