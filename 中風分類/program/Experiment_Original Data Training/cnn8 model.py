@@ -3,6 +3,7 @@
 CT Scan Classification for Stroke Detection
 (訓練程式 - 僅使用原始資料)
 (*** Gemini 修改版：加入 Specificity, NPV, ROC-AUC ***)
+(*** 修正版：修復 history_finetune NameError 及其他小問題 ***)
 """
 
 # === Main Libraries ===
@@ -18,10 +19,8 @@ import shutil
 
 import tensorflow as tf
 print(tf.__version__)  # 確認 TensorFlow 版本
-from tensorflow.keras.applications import EfficientNetB3
-from tensorflow.keras.applications.efficientnet import preprocess_input
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.callbacks import ModelCheckpoint
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
 from tensorflow.keras import layers, models
 
 # ---
@@ -77,8 +76,14 @@ print("------------------------------------")
 imgs = []
 label = []
 
+path_lookup = {
+    "Normal": normal_path,
+    "Ischemia": ischemia_path,
+    "Hemorrhagic": hemorrhagic_path,
+}
+
 for img_list, label_name in [(normal_images, "Normal"), (ischemia_images, "Ischemia"), (hemorrhagic_images, "Hemorrhagic")]:
-    path = locals()[f"{label_name.lower()}_path"]
+    path = path_lookup[label_name]
     for img in img_list:
         img_path = os.path.join(path, img)
         imgs.append(img_path)
@@ -107,7 +112,7 @@ plot_samples(df, "Ischemia", "sample_images_ischemia.png")
 plot_samples(df, "Hemorrhagic", "sample_images_hemorrhagic.png")
 
 # 類別分佈圖
-sns.countplot(data=df, x='Label', palette='Set2')
+sns.countplot(data=df, x='Label', hue='Label', palette='Set2', legend=False)
 plt.title("Distribution of Classes")
 plt.savefig(os.path.join(output_dir, "class_distribution.png"))
 plt.close()
@@ -133,19 +138,21 @@ summary_df.loc['Total'] = summary_df.sum()
 print(summary_df)
 
 # === Generator ===
-train_datagen = ImageDataGenerator(preprocessing_function=preprocess_input)
+# 註：CNN8 是從頭訓練的簡單 CNN，不是 EfficientNet 遷移學習，
+# 所以這裡改用單純的 rescale 正規化，而不是 EfficientNet 專用的 preprocess_input。
+train_datagen = ImageDataGenerator(rescale=1./255)
 train_generator = train_datagen.flow_from_dataframe(
     train_df, x_col='Image_path', y_col='Label',
     target_size=(300, 300), batch_size=32, class_mode='categorical'
 )
 
-val_datagen = ImageDataGenerator(preprocessing_function=preprocess_input)
+val_datagen = ImageDataGenerator(rescale=1./255)
 val_generator = val_datagen.flow_from_dataframe(
     val_df, x_col='Image_path', y_col='Label',
     target_size=(300, 300), batch_size=32, class_mode='categorical'
 )
 
-test_datagen = ImageDataGenerator(preprocessing_function=preprocess_input)
+test_datagen = ImageDataGenerator(rescale=1./255)
 test_generator = test_datagen.flow_from_dataframe(
     test_df, x_col='Image_path', y_col='Label',
     target_size=(300, 300), batch_size=32, class_mode='categorical', shuffle=False
@@ -182,7 +189,7 @@ x = layers.MaxPooling2D()(x)
 x = layers.Conv2D(256, 3, padding='same', use_bias=False)(x)
 x = layers.BatchNormalization()(x)
 x = layers.ReLU()(x)
-x = layers.GlobalAveragePooling2D()(x) # 取代 Flatten
+x = layers.GlobalAveragePooling2D()(x)  # 取代 Flatten
 
 # 第 6 層: 全連接層
 x = layers.Dense(512, activation='relu')(x)
@@ -206,7 +213,7 @@ model.compile(
 )
 model.summary()
 
-# === 3. 設定 Checkpoint ===
+# === 3. 設定 Callbacks ===
 # 將儲存檔名改為 cnn8，避免覆蓋舊檔案
 checkpoint_filepath = os.path.join(output_dir, "best_cnn8_model.keras")
 checkpoint_callback = ModelCheckpoint(
@@ -217,22 +224,32 @@ checkpoint_callback = ModelCheckpoint(
     verbose=1
 )
 
+# 新增 EarlyStopping，避免在已經過擬合後還跑滿 50 epochs
+early_stop_callback = EarlyStopping(
+    monitor="val_accuracy",
+    mode="max",
+    patience=10,
+    restore_best_weights=True,
+    verbose=1
+)
+
 # === 4. 開始訓練 ===
 print("\n--- Starting Training ---")
 history = model.fit(
     train_generator,
     validation_data=val_generator,
     epochs=50,
-    callbacks=[checkpoint_callback]
+    callbacks=[checkpoint_callback, early_stop_callback]
 )
 print("\n--- Training Finished ---")
 print(f"✅ Best model saved to '{checkpoint_filepath}'")
 
 # === Plot and Save acc & loss ===
-acc = history_finetune.history['accuracy']
-val_acc = history_finetune.history['val_accuracy']
-loss = history_finetune.history['loss']
-val_loss = history_finetune.history['val_loss']
+# 修正: 原本誤用了未定義的 history_finetune，這裡改回實際存訓練結果的 history
+acc = history.history['accuracy']
+val_acc = history.history['val_accuracy']
+loss = history.history['loss']
+val_loss = history.history['val_loss']
 
 plt.figure(figsize=(12, 5))
 plt.subplot(1, 2, 1)
@@ -254,8 +271,10 @@ print("\nLoading best model for final evaluation...")
 best_model = tf.keras.models.load_model(checkpoint_filepath)
 
 # 準確度 (Accuracy)
-val_loss, val_accuracy = best_model.evaluate(test_generator)
-print(f"Evaluation on Test Set: loss is {val_loss:.4f}, accuracy is {val_accuracy*100:.2f}%")
+# 修正: 改名為 test_loss / test_accuracy，避免和上面訓練歷史中的 val_loss 變數混淆
+# （這裡評估的是「測試集」，不是驗證集）
+test_loss, test_accuracy = best_model.evaluate(test_generator)
+print(f"Evaluation on Test Set: loss is {test_loss:.4f}, accuracy is {test_accuracy*100:.2f}%")
 
 # === Report & Confusion Matrix ===
 y_pred_probs = best_model.predict(test_generator)
@@ -313,7 +332,7 @@ for i in range(n_classes):
     print(f"Class: {class_names[i]}")
     print(f"  Specificity: {specificity:.4f}")
     print(f"  NPV (Negative Predictive Value): {npv:.4f}")
-    
+
     # 準備寫入報告
     report_lines_to_add.append(f"Class: {class_names[i]}")
     report_lines_to_add.append(f"  Specificity: {specificity:.4f}")
@@ -353,7 +372,7 @@ for i, color in zip(range(n_classes), colors):
     plt.plot(fpr[i], tpr[i], color=color, lw=2,
              label=f'ROC curve of class {class_names[i]} (area = {roc_auc[i]:0.4f})')
 
-plt.plot([0, 1], [0, 1], 'k--', lw=2) # 繪製對角線
+plt.plot([0, 1], [0, 1], 'k--', lw=2)  # 繪製對角線
 plt.xlim([0.0, 1.0])
 plt.ylim([0.0, 1.05])
 plt.xlabel('False Positive Rate')
@@ -378,13 +397,13 @@ report_lines_to_add.append(f"  Micro-average AUC: {roc_auc['micro']:.4f}")
 report_filepath = os.path.join(output_dir, "classification_report.txt")
 with open(report_filepath, 'w') as f:
     # 寫入準確度 (Accuracy) 和 Loss
-    f.write(f"Test Set Accuracy: {val_accuracy*100:.2f}%\n")
-    f.write(f"Test Set Loss: {val_loss:.4f}\n\n")
-    
+    f.write(f"Test Set Accuracy: {test_accuracy*100:.2f}%\n")
+    f.write(f"Test Set Loss: {test_loss:.4f}\n\n")
+
     # 寫入標準 Classification Report
     f.write("Classification Report:\n")
     f.write(report)
-    
+
     # 寫入新增的指標 (Specificity, NPV, AUC)
     for line in report_lines_to_add:
         f.write(line + "\n")
