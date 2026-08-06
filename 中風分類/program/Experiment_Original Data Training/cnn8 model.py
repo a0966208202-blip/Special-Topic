@@ -20,7 +20,7 @@ import shutil
 import tensorflow as tf
 print(tf.__version__)  # 確認 TensorFlow 版本
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
+from tensorflow.keras.callbacks import ModelCheckpoint
 from tensorflow.keras import layers, models
 
 # ---
@@ -37,7 +37,7 @@ output_dir = r"C:\Users\User\OneDrive\Desktop\Special Topic\cnn8_result"
 
 # ---
 # ✅ (2/3) 定義新指標圖片的儲存資料夾
-plot_save_dir = r"C:\Users\user\Special Topic\cnn8_original_result"
+plot_save_dir = r"C:\Users\User\OneDrive\Desktop\Special Topic\cnn8_result"
 # ---
 
 if os.path.exists(output_dir):
@@ -224,22 +224,13 @@ checkpoint_callback = ModelCheckpoint(
     verbose=1
 )
 
-# 新增 EarlyStopping，避免在已經過擬合後還跑滿 50 epochs
-early_stop_callback = EarlyStopping(
-    monitor="val_accuracy",
-    mode="max",
-    patience=10,
-    restore_best_weights=True,
-    verbose=1
-)
-
 # === 4. 開始訓練 ===
 print("\n--- Starting Training ---")
 history = model.fit(
     train_generator,
     validation_data=val_generator,
     epochs=50,
-    callbacks=[checkpoint_callback, early_stop_callback]
+    callbacks=[checkpoint_callback]
 )
 print("\n--- Training Finished ---")
 print(f"✅ Best model saved to '{checkpoint_filepath}'")
