@@ -426,7 +426,7 @@ class SaveBestInnerModelWeights(tf.keras.callbacks.Callback):
 # ============================================================
 TEMPERATURE = 3.0
 ALPHA       = 0.7
-NUM_EPOCHS  = 50  # 建議 50+，示範可改 10
+NUM_EPOCHS  = 5  # 建議 50+，示範可改 10
 
 # Stage 1 用: 兩個 teacher 各自的權重 (可依各自準確率調整)
 STAGE1_W_TEACHER1 = 0.6
@@ -532,7 +532,7 @@ print("✓ 學生模型已儲存！")
 # ============================================================
 def plot_training_curves(history, save_dir, tag):
     acc      = history.history['accuracy']
-    val_acc  = history.history['val_accuracy']
+    val_acc  = history.history.get('val_accuracy')
     loss     = history.history['loss']
     val_loss = history.history['val_loss']
 
@@ -540,9 +540,13 @@ def plot_training_curves(history, save_dir, tag):
 
     plt.subplot(1, 2, 1)
     plt.plot(acc, label='Train Accuracy')
-    plt.plot(val_acc, label='Validation Accuracy')
+    if val_acc is not None:
+        plt.plot(val_acc, label='Validation Accuracy')
+        plt.title(f'{tag} - Training and Validation Accuracy')
+    else:
+        print(f"⚠ {tag}: history 裡沒有 val_accuracy，只畫 Train Accuracy")
+        plt.title(f'{tag} - Training Accuracy')
     plt.legend(loc='lower right')
-    plt.title(f'{tag} - Training and Validation Accuracy')
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy')
 
