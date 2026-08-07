@@ -433,7 +433,7 @@ class SaveBestInnerModelWeights(tf.keras.callbacks.Callback):
 # ============================================================
 TEMPERATURE = 3.0
 ALPHA       = 0.7
-NUM_EPOCHS  = 3  # 建議 50+，示範可改 10
+NUM_EPOCHS  = 10  # 建議 50+，示範可改 10
 
 # Stage 1 用: 兩個 teacher 各自的權重 (可依各自準確率調整)
 STAGE1_W_TEACHER1 = 0.6
