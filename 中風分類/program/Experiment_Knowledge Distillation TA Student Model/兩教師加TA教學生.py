@@ -433,7 +433,7 @@ class SaveBestInnerModelWeights(tf.keras.callbacks.Callback):
 # ============================================================
 TEMPERATURE = 3.0
 ALPHA       = 0.7
-NUM_EPOCHS  = 10  # 建議 50+，示範可改 10
+NUM_EPOCHS  = 50  # 建議 50+，示範可改 10
 
 # Stage 1 用: 兩個 teacher 各自的權重 (可依各自準確率調整)
 STAGE1_W_TEACHER1 = 0.6
@@ -639,36 +639,10 @@ plt.savefig(os.path.join(OUTPUT_DIR, 'confusion_matrix.png'))
 plt.close()
 print("✓ Confusion Matrix 已儲存")
 
-# --- Confidence Interval ---
-n = np.sum(cm)
-correct_predictions = np.trace(cm)
-accuracy = correct_predictions / n
-Z = 1.96 
-se = math.sqrt((accuracy * (1 - accuracy)) / n)
-ci_lower = accuracy - (Z * se)
-ci_upper = accuracy + (Z * se)
-ci_lower = max(0.0, ci_lower)
-ci_upper = min(1.0, ci_upper)
-
-print(" Confidence Interval (95% CI)")
-print("="*45)
-print(f"▸ 測試總樣本數 (n) : {n}")
-print(f"▸ 預測正確數量     : {correct_predictions}")
-print(f"▸ 模型準確率 (Acc) : {accuracy:.4f} ({accuracy*100:.2f}%)")
-print(f"▸ 95% 信賴區間     : [{ci_lower:.4f}, {ci_upper:.4f}]")
-print("-" * 45)
-
 # --- Specificity & NPV ---
 print("\n--- Specificity & NPV (per-class) ---")
 specificities, npvs = [], []
 report_lines = ["\n--- Additional Metrics (One-vs-Rest) ---"]
-
-# 新增：把信賴區間寫進報告
-report_lines.append("\n--- 95% Confidence Interval ---")
-report_lines.append(f"測試總樣本數 (n): {n}")
-report_lines.append(f"預測正確數量: {correct_predictions}")
-report_lines.append(f"模型準確率 (Acc): {accuracy:.4f} ({accuracy*100:.2f}%)")
-report_lines.append(f"95% CI: [{ci_lower:.4f}, {ci_upper:.4f}]")
 
 for i in range(n_classes):
     FP = cm[:, i].sum() - cm[i, i]
@@ -725,6 +699,31 @@ report_lines.append("\n--- ROC-AUC Scores ---")
 for i in range(n_classes):
     report_lines.append(f"  {CLASS_NAMES[i]} AUC: {roc_auc[i]:.4f}")
 report_lines.append(f"  Micro-average AUC: {roc_auc['micro']:.4f}")
+
+# --- Confidence Interval ---
+n = np.sum(cm)
+correct_predictions = np.trace(cm)
+accuracy = correct_predictions / n
+Z = 1.96
+se = math.sqrt((accuracy * (1 - accuracy)) / n)
+ci_lower = accuracy - (Z * se)
+ci_upper = accuracy + (Z * se)
+ci_lower = max(0.0, ci_lower)
+ci_upper = min(1.0, ci_upper)
+
+print(" Confidence Interval (95% CI)")
+print("="*45)
+print(f"▸ 測試總樣本數 (n) : {n}")
+print(f"▸ 預測正確數量     : {correct_predictions}")
+print(f"▸ 模型準確率 (Acc) : {accuracy:.4f} ({accuracy*100:.2f}%)")
+print(f"▸ 95% 信賴區間     : [{ci_lower:.4f}, {ci_upper:.4f}]")
+print("-" * 45)
+
+report_lines.append("\n--- 95% Confidence Interval ---")
+report_lines.append(f"Sample size (n): {n}")
+report_lines.append(f"Correct predictions: {correct_predictions}")
+report_lines.append(f"Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+report_lines.append(f"95% CI: [{ci_lower:.4f}, {ci_upper:.4f}]")
 
 # ============================================================
 # 12. 儲存完整報告
