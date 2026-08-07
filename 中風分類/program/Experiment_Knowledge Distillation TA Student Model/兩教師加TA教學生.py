@@ -259,20 +259,23 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
     def __init__(self, student, teachers, teacher_weights=None):
         super().__init__()
         self.student = student
-        self.teachers = teachers  # [teacher1_model, teacher2_model]
+        self.teachers = teachers
         n = len(teachers)
         self.teacher_weights = teacher_weights or [1.0 / n] * n
+        # 自己管理 metric，不靠 compiled_metrics
+        self.acc_metric = tf.keras.metrics.CategoricalAccuracy(name="accuracy")
 
     def compile(self, optimizer, alpha, temperature):
-        super().compile(
-            optimizer=optimizer,
-            metrics=[tf.keras.metrics.CategoricalAccuracy(name="accuracy")],
-            run_eagerly=True
-        )
+        super().compile(optimizer=optimizer, run_eagerly=True)  # 拿掉 metrics=[...]
         self.alpha = alpha
         self.temperature = temperature
         self.student_loss_fn = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
         self.distillation_loss_fn = tf.keras.losses.KLDivergence()
+
+    @property
+    def metrics(self):
+        # 讓 Keras 每個 epoch 開始時自動幫你 reset_state()
+        return [self.acc_metric]
 
     def _ensemble_teacher_soft(self, x_t1, x_t2):
         soft = 0.0
@@ -284,7 +287,6 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
 
     def train_step(self, data):
         (x_t1, x_t2, x_student), y = data
-
         teacher_soft = self._ensemble_teacher_soft(x_t1, x_t2)
 
         with tf.GradientTape() as tape:
@@ -299,20 +301,17 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
 
         gradients = tape.gradient(loss, self.student.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.student.trainable_variables))
-        self.compiled_metrics.update_state(y, tf.nn.softmax(student_preds, axis=1))
 
-        results = {m.name: m.result() for m in self.metrics}
-        results['loss'] = loss
-        return results
+        self.acc_metric.update_state(y, tf.nn.softmax(student_preds, axis=1))
+        return {"loss": loss, "accuracy": self.acc_metric.result()}
 
     def test_step(self, data):
         (x_t1, x_t2, x_student), y = data
         student_preds = self.student(x_student, training=False)
         student_loss = tf.keras.losses.CategoricalCrossentropy(from_logits=True)(y, student_preds)
-        self.compiled_metrics.update_state(y, tf.nn.softmax(student_preds, axis=1))
-        results = {m.name: m.result() for m in self.metrics}
-        results['loss'] = student_loss
-        return results
+
+        self.acc_metric.update_state(y, tf.nn.softmax(student_preds, axis=1))
+        return {"loss": student_loss, "accuracy": self.acc_metric.result()}
 
     def get_config(self):
         return {}
@@ -333,17 +332,20 @@ class ThreeSourceDistillationTrainer(tf.keras.Model):
         self.w_teacher1 = w_teacher1
         self.w_teacher2 = w_teacher2
         self.w_ta = w_ta
+        # 自己管理 metric，不靠 compiled_metrics
+        self.acc_metric = tf.keras.metrics.CategoricalAccuracy(name="accuracy")
 
     def compile(self, optimizer, alpha, temperature):
-        super().compile(
-            optimizer=optimizer,
-            metrics=[tf.keras.metrics.CategoricalAccuracy(name="accuracy")],
-            run_eagerly=True
-        )
+        super().compile(optimizer=optimizer, run_eagerly=True)  # 拿掉 metrics=[...]
         self.alpha = alpha
         self.temperature = temperature
         self.student_loss_fn = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
         self.distillation_loss_fn = tf.keras.losses.KLDivergence()
+
+    @property
+    def metrics(self):
+        # 讓 Keras 每個 epoch 開始自動幫你 reset_state()
+        return [self.acc_metric]
 
     def train_step(self, data):
         (x_t1, x_t2, x_student), y = data
@@ -374,22 +376,27 @@ class ThreeSourceDistillationTrainer(tf.keras.Model):
 
         gradients = tape.gradient(loss, self.student.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.student.trainable_variables))
-        self.compiled_metrics.update_state(y, tf.nn.softmax(student_preds, axis=1))
 
-        results = {m.name: m.result() for m in self.metrics}
-        results['loss'] = loss
-        results['student_loss'] = student_loss
-        results['kd_loss'] = distillation_loss
-        return results
+        self.acc_metric.update_state(y, tf.nn.softmax(student_preds, axis=1))
+
+        return {
+            "loss": loss,
+            "accuracy": self.acc_metric.result(),
+            "student_loss": student_loss,
+            "kd_loss": distillation_loss,
+        }
 
     def test_step(self, data):
         (_x_t1, _x_t2, x_student), y = data
         student_preds = self.student(x_student, training=False)
         student_loss = tf.keras.losses.CategoricalCrossentropy(from_logits=True)(y, student_preds)
-        self.compiled_metrics.update_state(y, tf.nn.softmax(student_preds, axis=1))
-        results = {m.name: m.result() for m in self.metrics}
-        results['loss'] = student_loss
-        return results
+
+        self.acc_metric.update_state(y, tf.nn.softmax(student_preds, axis=1))
+
+        return {
+            "loss": student_loss,
+            "accuracy": self.acc_metric.result(),
+        }
 
     def get_config(self):
         return {}
@@ -426,7 +433,7 @@ class SaveBestInnerModelWeights(tf.keras.callbacks.Callback):
 # ============================================================
 TEMPERATURE = 3.0
 ALPHA       = 0.7
-NUM_EPOCHS  = 5  # 建議 50+，示範可改 10
+NUM_EPOCHS  = 3  # 建議 50+，示範可改 10
 
 # Stage 1 用: 兩個 teacher 各自的權重 (可依各自準確率調整)
 STAGE1_W_TEACHER1 = 0.6

@@ -6,34 +6,40 @@ Stage 2: Teacher1 + Teacher2 + TA  -> Student (CNN8)
 
 Teacher1 Accuracy: 96.17%
 Teacher2 Accuracy: 94.81%
-TA Accuracy:       92.33%
-Student Accuracy:  87.74%
-Performance Retention (vs best of 3 sources): 91.24%
+TA Accuracy:       70.53%
+Student Accuracy:  73.08%
+Performance Retention (vs best of 3 sources): 76.00%
 
 Classification Report:
               precision    recall  f1-score   support
 
- Hemorrhagic       0.62      0.99      0.76       219
-    Ischemia       0.98      0.54      0.70       226
-      Normal       0.97      0.94      0.95       885
+ Hemorrhagic       0.58      0.64      0.61       219
+    Ischemia       1.00      0.01      0.02       226
+      Normal       0.77      0.94      0.84       885
 
-    accuracy                           0.88      1330
-   macro avg       0.86      0.82      0.80      1330
-weighted avg       0.91      0.88      0.88      1330
+    accuracy                           0.73      1330
+   macro avg       0.78      0.53      0.49      1330
+weighted avg       0.77      0.73      0.66      1330
 
 --- Additional Metrics (One-vs-Rest) ---
+
+--- 95% Confidence Interval ---
+代刚羆妓セ计 (n): 1330
+箇代タ絋计秖: 972
+家非絋瞯 (Acc): 0.7308 (73.08%)
+95% CI: [0.7070, 0.7547]
 Class: Hemorrhagic
-  Specificity: 0.8785
-  NPV:         0.9969
+  Specificity: 0.9064
+  NPV:         0.9281
 Class: Ischemia
-  Specificity: 0.9982
-  NPV:         0.9138
+  Specificity: 1.0000
+  NPV:         0.8313
 Class: Normal
-  Specificity: 0.9416
-  NPV:         0.8821
+  Specificity: 0.4292
+  NPV:         0.7733
 
 --- ROC-AUC Scores ---
-  Hemorrhagic AUC: 0.9935
-  Ischemia AUC: 0.9856
-  Normal AUC: 0.9870
-  Micro-average AUC: 0.9703
+  Hemorrhagic AUC: 0.8697
+  Ischemia AUC: 0.8671
+  Normal AUC: 0.8678
+  Micro-average AUC: 0.8869
