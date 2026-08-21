@@ -50,8 +50,8 @@ print(f"使用裝置: {device_name if device_name else '/CPU:0'}")
 # 3. 路徑設定
 # ============================================================
 DATA_DIR      = r'archive\Brain_Stroke_CT_Dataset'
-TEACHER1_PATH = r"C:\Users\User\OneDrive\Desktop\Special Topic\b3_result\best_finetuned_model.keras"
-TEACHER2_PATH = r"C:\Users\User\OneDrive\Desktop\Special Topic\result\best_finetuned_model.keras"
+TEACHER1_PATH = r"C:\Users\User\OneDrive\Desktop\Special Topic\result\b3_result\best_finetuned_model.keras"
+TEACHER2_PATH = r"C:\Users\User\OneDrive\Desktop\Special Topic\result\b0_result\best_finetuned_model.keras"
 OUTPUT_DIR    = r"teacher ta_distillation_result"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 print(f"✓ 輸出資料夾: {OUTPUT_DIR}")
