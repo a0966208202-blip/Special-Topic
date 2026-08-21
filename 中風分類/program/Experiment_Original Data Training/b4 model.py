@@ -33,11 +33,11 @@ from itertools import cycle
 # === Configuration ===
 data_dir = r"C:\Users\User\OneDrive\Desktop\Special Topic\archive\Brain_Stroke_CT_Dataset"
 # cgan_dir is removed as we are not using augmented data
-output_dir = r"C:\Users\User\OneDrive\Desktop\Special Topic\b4_result"
+output_dir = r"C:\Users\User\OneDrive\Desktop\Special Topic\result\b4_result"
 
 # ---
 # ✅ (2/3) 定義新指標圖片的儲存資料夾
-plot_save_dir = r"C:\Users\User\OneDrive\Desktop\Special Topic\b4_result"
+plot_save_dir = r"C:\Users\User\OneDrive\Desktop\Special Topic\result\b4_result"
 # ---
 
 if os.path.exists(output_dir):
