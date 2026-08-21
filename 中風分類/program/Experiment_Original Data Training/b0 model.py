@@ -37,7 +37,7 @@ output_dir = r"C:\Users\User\OneDrive\Desktop\Special Topic\result\b0_result"
 
 # ---
 # ✅ (2/3) 定義新指標圖片的儲存資料夾
-plot_save_dir = r"C:\Users\User\OneDrive\Desktop\Special Topic\result"
+plot_save_dir = r"C:\Users\User\OneDrive\Desktop\Special Topic\result\b0_result"
 # ---
 
 if os.path.exists(output_dir):
