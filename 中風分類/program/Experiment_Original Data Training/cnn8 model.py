@@ -4,9 +4,11 @@ CT Scan Classification for Stroke Detection
 (訓練程式 - 僅使用原始資料)
 (*** Gemini 修改版：加入 Specificity, NPV, ROC-AUC ***)
 (*** 修正版：修復 history_finetune NameError 及其他小問題 ***)
+(*** 新增：95% 信賴區間 Wald + Wilson ***)
 """
 
 # === Main Libraries ===
+import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -383,8 +385,45 @@ for i in range(n_classes):
     report_lines_to_add.append(f"  {class_names[i]} AUC: {roc_auc[i]:0.4f}")
 report_lines_to_add.append(f"  Micro-average AUC: {roc_auc['micro']:.4f}")
 
+# === 4. 計算 95% 信賴區間 (Wald + Wilson) ===
+print("\n--- Calculating 95% Confidence Interval (Wald + Wilson) ---")
+n = np.sum(cm)
+correct_predictions = np.trace(cm)
+accuracy = correct_predictions / n
+Z = 1.96
 
-# === 3. 儲存包含所有指標的報告 ===
+# Wald interval
+se = math.sqrt((accuracy * (1 - accuracy)) / n)
+ci_lower = accuracy - (Z * se)
+ci_upper = accuracy + (Z * se)
+ci_lower = max(0.0, ci_lower)
+ci_upper = min(1.0, ci_upper)
+
+# Wilson score interval（對小樣本/極端比例更穩健，可作為對照）
+denom = 1 + (Z ** 2) / n
+center = (accuracy + (Z ** 2) / (2 * n)) / denom
+margin = (Z * math.sqrt((accuracy * (1 - accuracy) / n) + (Z ** 2) / (4 * n ** 2))) / denom
+wilson_lower = max(0.0, center - margin)
+wilson_upper = min(1.0, center + margin)
+
+print(" Confidence Interval (95% CI)")
+print("=" * 45)
+print(f"▸ 測試總樣本數 (n) : {n}")
+print(f"▸ 預測正確數量     : {correct_predictions}")
+print(f"▸ 模型準確率 (Acc) : {accuracy:.4f} ({accuracy*100:.2f}%)")
+print(f"▸ 95% CI (Wald)    : [{ci_lower:.4f}, {ci_upper:.4f}]")
+print(f"▸ 95% CI (Wilson)  : [{wilson_lower:.4f}, {wilson_upper:.4f}]")
+print("-" * 45)
+
+report_lines_to_add.append("\n--- 95% Confidence Interval ---")
+report_lines_to_add.append(f"Sample size (n): {n}")
+report_lines_to_add.append(f"Correct predictions: {correct_predictions}")
+report_lines_to_add.append(f"Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+report_lines_to_add.append(f"95% CI (Wald): [{ci_lower:.4f}, {ci_upper:.4f}]")
+report_lines_to_add.append(f"95% CI (Wilson): [{wilson_lower:.4f}, {wilson_upper:.4f}]")
+
+
+# === 5. 儲存包含所有指標的報告 ===
 report_filepath = os.path.join(output_dir, "classification_report.txt")
 with open(report_filepath, 'w') as f:
     # 寫入準確度 (Accuracy) 和 Loss
@@ -395,7 +434,7 @@ with open(report_filepath, 'w') as f:
     f.write("Classification Report:\n")
     f.write(report)
 
-    # 寫入新增的指標 (Specificity, NPV, AUC)
+    # 寫入新增的指標 (Specificity, NPV, AUC, 95% CI)
     for line in report_lines_to_add:
         f.write(line + "\n")
 
