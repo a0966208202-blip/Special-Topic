@@ -3,6 +3,7 @@
 CT Scan Classification - Two-Stage (TA-based) Knowledge Distillation
 Teacher x2 (EfficientNetB3 EfficientNetB0) → TA (ResNet20) → Student (CNN8)
 任務: 3分類 (Normal / Ischemia / Hemorrhagic)
+新增信賴區間 (Wald + Wilson)
 """
 
 # ============================================================
@@ -10,6 +11,7 @@ Teacher x2 (EfficientNetB3 EfficientNetB0) → TA (ResNet20) → Student (CNN8)
 # ============================================================
 
 import os
+import math
 import random
 import numpy as np
 import pandas as pd
@@ -55,13 +57,8 @@ print(f"✓ 輸出資料夾: {OUTPUT_DIR}")
 # ============================================================
 # 4. 資料載入 (data.py 對應區塊)
 # ============================================================
-# 兩個 teacher 解析度不同 (Teacher1=EfficientNetB3 吃 300x300,
-# Teacher2=EfficientNetB0 吃 224x224)，所以改用 tf.data 自己刻 pipeline：
-# 同一張圖讀進來一次，resize 成三種尺寸 (teacher1 / teacher2 / student 各一份)，
-# 確保三者對應到同一張圖、同一個 label，順序不會錯位。
-
 TEACHER1_SIZE = (300, 300)   # EfficientNetB3
-TEACHER2_SIZE = (224, 224)   # EfficientNetB0，換成你實際的 teacher2 解析度
+TEACHER2_SIZE = (224, 224)   # EfficientNetB0
 STUDENT_SIZE  = (300, 300)   # TA (ResNet20) / Student (CNN8) 共用的尺寸
 
 def get_ct_dataloaders(data_dir, batch_size=32,
@@ -81,7 +78,6 @@ def get_ct_dataloaders(data_dir, batch_size=32,
 
     df = pd.DataFrame({"Image_path": imgs, "Label": labels})
 
-    # 切分：train 64% / val 16% / test 20%
     train_df, test_df = train_test_split(
         df, test_size=0.2, random_state=42, stratify=df['Label'])
     train_df, val_df  = train_test_split(
@@ -119,7 +115,6 @@ def get_ct_dataloaders(data_dir, batch_size=32,
     val_ds   = make_dataset(val_df,   shuffle=False)
     test_ds  = make_dataset(test_df,  shuffle=False)
 
-    # 供評估階段使用的 test 標籤 (依 test_df 原始順序，因為 shuffle=False)
     test_labels = test_df['Label'].map(label_to_idx).values
 
     return train_ds, val_ds, test_ds, len(train_df), class_names, test_labels
@@ -136,14 +131,12 @@ print(f"類別名稱: {CLASS_NAMES}")
 # 5. 模型定義 (models.py 對應區塊)
 # ============================================================
 
-# --- Teacher Models (EfficientNetB3 EfficientNetB0) ---
 def get_teacher_model(model_path):
     model = tf.keras.models.load_model(model_path)
     model.trainable = False
     print(f"✓ Teacher 模型載入完成: {model_path}")
     return model
 
-# --- TA Model: ResNet20 ---
 def resnet_block(x, filters, kernel_size=3, stride=1, use_shortcut=False):
     shortcut = x
 
@@ -173,17 +166,14 @@ def get_ta_model(input_shape=STUDENT_SIZE + (3,), num_classes=3):
     x = layers.ReLU()(x)
     x = layers.MaxPooling2D(3, strides=2, padding='same')(x)
 
-    # Stage 1: 16 filters
     x = resnet_block(x, 16, use_shortcut=True)
     x = resnet_block(x, 16)
     x = resnet_block(x, 16)
 
-    # Stage 2: 32 filters
     x = resnet_block(x, 32, stride=2, use_shortcut=True)
     x = resnet_block(x, 32)
     x = resnet_block(x, 32)
 
-    # Stage 3: 64 filters
     x = resnet_block(x, 64, stride=2, use_shortcut=True)
     x = resnet_block(x, 64)
     x = resnet_block(x, 64)
@@ -194,7 +184,6 @@ def get_ta_model(input_shape=STUDENT_SIZE + (3,), num_classes=3):
 
     return models.Model(inputs, outputs, name='ResNet20_TA')
 
-# --- Student Model: CNN8 ---
 def get_student_model(input_shape=STUDENT_SIZE + (3,), num_classes=3):
     inputs = layers.Input(shape=input_shape)
 
@@ -233,7 +222,6 @@ student_model  = get_student_model(num_classes=num_classes)
 # 6. 模型比較 (utils.py 對應區塊)
 # ============================================================
 def compare_models(named_models):
-    """named_models: dict, e.g. {'Teacher1 (EfficientNetB3)': teacher1_model, ...}"""
     print("=" * 60)
     print("模型參數比較")
     print("=" * 60)
@@ -241,7 +229,7 @@ def compare_models(named_models):
     for name, model in named_models.items():
         p = model.count_params()
         if base_params is None:
-            base_params = p  # 以第一個模型 (通常是最大的 teacher) 當比較基準
+            base_params = p
         print(f"{name}: {p:,} 個參數 ({100*p/base_params:.2f}% of {list(named_models.keys())[0]})")
     print("=" * 60)
 
@@ -261,7 +249,7 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
     def __init__(self, student, teachers, teacher_weights=None):
         super().__init__()
         self.student = student
-        self.teachers = teachers  # list, e.g. [teacher1_model, teacher2_model]
+        self.teachers = teachers
         n = len(teachers)
         self.teacher_weights = teacher_weights or [1.0 / n] * n
 
@@ -277,8 +265,6 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
         self.distillation_loss_fn = tf.keras.losses.KLDivergence()
 
     def _ensemble_teacher_soft(self, x_t1, x_t2):
-        # x_t1 餵給 teachers[0]（例如 300x300 給 EfficientNetB3）
-        # x_t2 餵給 teachers[1]（例如 224x224 給 EfficientNetB0）
         soft = 0.0
         inputs_per_teacher = [x_t1, x_t2]
         for w, teacher, x_i in zip(self.teacher_weights, self.teachers, inputs_per_teacher):
@@ -287,12 +273,12 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
         return soft
 
     def train_step(self, data):
-        (x_t1, x_t2, x_student), y = data  # 三種尺寸的圖 + one-hot label
+        (x_t1, x_t2, x_student), y = data
 
-        teacher_soft = self._ensemble_teacher_soft(x_t1, x_t2)  # 兩個 teacher 的平均 soft label
+        teacher_soft = self._ensemble_teacher_soft(x_t1, x_t2)
 
         with tf.GradientTape() as tape:
-            student_preds = self.student(x_student, training=True)  # TA 用自己的尺寸 (student_size)
+            student_preds = self.student(x_student, training=True)
 
             student_loss = self.student_loss_fn(y, student_preds)
 
@@ -345,7 +331,7 @@ class DistillationTrainer(tf.keras.Model):
         self.distillation_loss_fn = tf.keras.losses.KLDivergence()
 
     def train_step(self, data):
-        (_x_t1, _x_t2, x_student), y = data  # Stage 2 只需要 student_size 那份圖
+        (_x_t1, _x_t2, x_student), y = data
 
         teacher_preds = self.teacher(x_student, training=False)
 
@@ -386,10 +372,6 @@ class DistillationTrainer(tf.keras.Model):
 # ============================================================
 # 7b. 自訂 Callback：存「內部真正的模型」權重，不是整個 Trainer 外殼
 # ============================================================
-# ta_trainer / student_trainer 是自訂的 subclassed Model，沒有定義 call()，
-# Keras 判斷不出它的輸入形狀 -> 永遠處於「未 build」狀態 -> 不能直接 save_weights。
-# 但 trainer 裡面包的 ta_model / student_model 是標準 Functional model，
-# 建立的當下就已經 built 好了，所以改成用這個 callback 直接存那個內部模型。
 class SaveBestInnerModelWeights(tf.keras.callbacks.Callback):
     def __init__(self, inner_model, filepath, monitor='val_loss', mode='min'):
         super().__init__()
@@ -418,12 +400,12 @@ class SaveBestInnerModelWeights(tf.keras.callbacks.Callback):
 # ============================================================
 TEMPERATURE = 3.0
 ALPHA       = 0.7
-NUM_EPOCHS  = 50  # 建議 50+，示範可改 10
+NUM_EPOCHS  = 50
 
 ta_trainer = MultiTeacherDistillationTrainer(
     student=ta_model,
     teachers=[teacher1_model, teacher2_model],
-    teacher_weights=[0.6, 0.4],   # 兩個 teacher 各佔一半，可依準確率調整權重
+    teacher_weights=[0.6, 0.4],
 )
 ta_trainer.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
@@ -436,13 +418,6 @@ print(f"  溫度參數 (Temperature): {TEMPERATURE}")
 print(f"  Alpha (Hard loss 權重): {ALPHA}")
 print(f"  訓練輪數: {NUM_EPOCHS}")
 
-# ⚠️ 修正處：自訂的 MultiTeacherDistillationTrainer 沒有完整的 get_config/from_config，
-# ModelCheckpoint 存整個 trainer 存下來的 .keras 檔之後讀不回來 (TypeError: Could not
-# locate class ...)。改成只存權重 (save_weights_only=True)，訓練完再把最佳權重讀回
-# trainer，然後另存一份「純模型」的 ta_model — 這份是普通的 functional model，
-# 之後 load_model() 一定讀得回來。
-# ⚠️ 修正處：ta_trainer 沒有 call()，無法直接用 ModelCheckpoint(save_weights_only=True)
-# 存整個 trainer。改成用上面定義的 callback，直接存 ta_model（已經 built 好的內部模型）。
 ta_checkpoint_cb = SaveBestInnerModelWeights(
     inner_model=ta_model,
     filepath=os.path.join(OUTPUT_DIR, 'best_ta.weights.h5'),
@@ -460,7 +435,6 @@ ta_history = ta_trainer.fit(
 )
 print("\n--- Stage 1 訓練完成 ---")
 
-# 把訓練過程中最好的權重讀回 ta_model 本身，再另存成「純模型」檔案
 ta_model.load_weights(os.path.join(OUTPUT_DIR, 'best_ta.weights.h5'))
 ta_model.save(os.path.join(OUTPUT_DIR, 'best_ta_model.keras'))
 print("✓ TA 模型已儲存！")
@@ -486,8 +460,6 @@ print(f"  溫度參數 (Temperature): {TEMPERATURE}")
 print(f"  Alpha (Hard loss 權重): {ALPHA}")
 print(f"  訓練輪數: {NUM_EPOCHS}")
 
-# ⚠️ 同樣的修正：這裡也改成只存權重，訓練完再另存純模型
-# ⚠️ 同樣的修正：改存 student_model 本身，不是 student_trainer 外殼
 student_checkpoint_cb = SaveBestInnerModelWeights(
     inner_model=student_model,
     filepath=os.path.join(OUTPUT_DIR, 'best_student.weights.h5'),
@@ -550,13 +522,11 @@ best_student_path = os.path.join(OUTPUT_DIR, 'best_student_model.keras')
 best_student = tf.keras.models.load_model(best_student_path)
 print(f"✓ 已載入最佳學生模型: {best_student_path}")
 
-# test_loader 現在吐出 ((x_t1, x_t2, x_student), y)，
-# 每個模型解析度不同，所以各自 map 出自己要的那份圖
 test_loader_t1      = test_loader.map(lambda xs, y: (xs[0], y))
 test_loader_t2      = test_loader.map(lambda xs, y: (xs[1], y))
 test_loader_student = test_loader.map(lambda xs, y: (xs[2], y))
 
-y_true = test_labels  # 從 get_ct_dataloaders 回傳的原始標籤 (test_df 順序，shuffle=False)
+y_true = test_labels
 n_classes = len(CLASS_NAMES)
 
 y_pred_logits = best_student.predict(test_loader_student.map(lambda x, y: x))
@@ -668,6 +638,42 @@ report_lines.append("\n--- ROC-AUC Scores ---")
 for i in range(n_classes):
     report_lines.append(f"  {CLASS_NAMES[i]} AUC: {roc_auc[i]:.4f}")
 report_lines.append(f"  Micro-average AUC: {roc_auc['micro']:.4f}")
+
+# --- Confidence Interval (Wald + Wilson) ---
+n = np.sum(cm)
+correct_predictions = np.trace(cm)
+accuracy = correct_predictions / n
+Z = 1.96
+
+# Wald interval
+se = math.sqrt((accuracy * (1 - accuracy)) / n)
+ci_lower = accuracy - (Z * se)
+ci_upper = accuracy + (Z * se)
+ci_lower = max(0.0, ci_lower)
+ci_upper = min(1.0, ci_upper)
+
+# Wilson score interval（對小樣本/極端比例更穩健，可作為對照）
+denom = 1 + (Z ** 2) / n
+center = (accuracy + (Z ** 2) / (2 * n)) / denom
+margin = (Z * math.sqrt((accuracy * (1 - accuracy) / n) + (Z ** 2) / (4 * n ** 2))) / denom
+wilson_lower = max(0.0, center - margin)
+wilson_upper = min(1.0, center + margin)
+
+print(" Confidence Interval (95% CI)")
+print("="*45)
+print(f"▸ 測試總樣本數 (n) : {n}")
+print(f"▸ 預測正確數量     : {correct_predictions}")
+print(f"▸ 模型準確率 (Acc) : {accuracy:.4f} ({accuracy*100:.2f}%)")
+print(f"▸ 95% CI (Wald)    : [{ci_lower:.4f}, {ci_upper:.4f}]")
+print(f"▸ 95% CI (Wilson)  : [{wilson_lower:.4f}, {wilson_upper:.4f}]")
+print("-" * 45)
+
+report_lines.append("\n--- 95% Confidence Interval ---")
+report_lines.append(f"Sample size (n): {n}")
+report_lines.append(f"Correct predictions: {correct_predictions}")
+report_lines.append(f"Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+report_lines.append(f"95% CI (Wald): [{ci_lower:.4f}, {ci_upper:.4f}]")
+report_lines.append(f"95% CI (Wilson): [{wilson_lower:.4f}, {wilson_upper:.4f}]")
 
 # ============================================================
 # 12. 儲存完整報告
