@@ -4,7 +4,7 @@ CT Scan Classification - Two-Stage, Three-Source Knowledge Distillation
 Stage 1: Teacher1 (EfficientNetB3) + Teacher2 (EfficientNetB0) -> TA (ResNet20)
 Stage 2: Teacher1 + Teacher2 + TA (三個來源同時)         -> Student (CNN8)
 任務: 3分類 (Normal / Ischemia / Hemorrhagic)
-更改CNN8的架構、新增信賴區間
+更改CNN8的架構、新增信賴區間 (Wald + Wilson)
 
 """
 
@@ -59,12 +59,8 @@ print(f"✓ 輸出資料夾: {OUTPUT_DIR}")
 # ============================================================
 # 4. 資料載入 (data.py 對應區塊)
 # ============================================================
-# 沿用 doc2 的作法：同一張圖一次讀進來，resize 成三種尺寸
-# (teacher1 / teacher2 / student-size)，確保三者對應同一張圖、同一個 label。
-# TA 和 Student 兩個模型都吃 student_size 那份。
-
 TEACHER1_SIZE = (300, 300)   # EfficientNetB3
-TEACHER2_SIZE = (224, 224)   # EfficientNetB0，換成你實際的 teacher2 解析度
+TEACHER2_SIZE = (224, 224)   # EfficientNetB0
 STUDENT_SIZE  = (300, 300)   # TA (ResNet20) / Student (CNN8) 共用的尺寸
 
 def get_ct_dataloaders(data_dir, batch_size=32,
@@ -254,7 +250,7 @@ compare_models({
 # 7. 知識蒸餾 Trainer 定義 (distillation.py 對應區塊)
 # ============================================================
 
-# --- Stage 1: 2 個 Teacher -> TA (與 doc2 相同，不變) ---
+# --- Stage 1: 2 個 Teacher -> TA (不變) ---
 class MultiTeacherDistillationTrainer(tf.keras.Model):
     def __init__(self, student, teachers, teacher_weights=None):
         super().__init__()
@@ -262,11 +258,10 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
         self.teachers = teachers
         n = len(teachers)
         self.teacher_weights = teacher_weights or [1.0 / n] * n
-        # 自己管理 metric，不靠 compiled_metrics
         self.acc_metric = tf.keras.metrics.CategoricalAccuracy(name="accuracy")
 
     def compile(self, optimizer, alpha, temperature):
-        super().compile(optimizer=optimizer, run_eagerly=True)  # 拿掉 metrics=[...]
+        super().compile(optimizer=optimizer, run_eagerly=True)
         self.alpha = alpha
         self.temperature = temperature
         self.student_loss_fn = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
@@ -274,7 +269,6 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
 
     @property
     def metrics(self):
-        # 讓 Keras 每個 epoch 開始時自動幫你 reset_state()
         return [self.acc_metric]
 
     def _ensemble_teacher_soft(self, x_t1, x_t2):
@@ -317,10 +311,7 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
         return {}
 
 
-# --- Stage 2 (改版重點): Teacher1 + Teacher2 + TA 三個來源同時 -> Student ---
-# 沿用 doc1 的 loss 設計 (三路 KD 各自算再加權加總)，
-# 但改用 doc2 的三解析度 data pipeline: teacher1 吃 x_t1、teacher2 吃 x_t2、
-# TA 和 Student 都吃 x_student (因為 TA 訓練時就是用 student_size)。
+# --- Stage 2: Teacher1 + Teacher2 + TA 三個來源同時 -> Student ---
 class ThreeSourceDistillationTrainer(tf.keras.Model):
     def __init__(self, student, teacher1, teacher2, ta,
                  w_teacher1=1/3, w_teacher2=1/3, w_ta=1/3):
@@ -332,11 +323,10 @@ class ThreeSourceDistillationTrainer(tf.keras.Model):
         self.w_teacher1 = w_teacher1
         self.w_teacher2 = w_teacher2
         self.w_ta = w_ta
-        # 自己管理 metric，不靠 compiled_metrics
         self.acc_metric = tf.keras.metrics.CategoricalAccuracy(name="accuracy")
 
     def compile(self, optimizer, alpha, temperature):
-        super().compile(optimizer=optimizer, run_eagerly=True)  # 拿掉 metrics=[...]
+        super().compile(optimizer=optimizer, run_eagerly=True)
         self.alpha = alpha
         self.temperature = temperature
         self.student_loss_fn = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
@@ -344,7 +334,6 @@ class ThreeSourceDistillationTrainer(tf.keras.Model):
 
     @property
     def metrics(self):
-        # 讓 Keras 每個 epoch 開始自動幫你 reset_state()
         return [self.acc_metric]
 
     def train_step(self, data):
@@ -352,7 +341,7 @@ class ThreeSourceDistillationTrainer(tf.keras.Model):
 
         t1_preds = self.teacher1(x_t1, training=False)
         t2_preds = self.teacher2(x_t2, training=False)
-        ta_preds = self.ta(x_student, training=False)   # TA 吃 student_size
+        ta_preds = self.ta(x_student, training=False)
 
         with tf.GradientTape() as tape:
             student_preds = self.student(x_student, training=True)
@@ -433,14 +422,11 @@ class SaveBestInnerModelWeights(tf.keras.callbacks.Callback):
 # ============================================================
 TEMPERATURE = 3.0
 ALPHA       = 0.7
-NUM_EPOCHS  = 50  # 建議 50+，示範可改 10
+NUM_EPOCHS  = 50
 
-# Stage 1 用: 兩個 teacher 各自的權重 (可依各自準確率調整)
 STAGE1_W_TEACHER1 = 0.6
 STAGE1_W_TEACHER2 = 0.4
 
-# Stage 2 用: 三個來源的權重 — TA 給比較高的權重
-# (TAKD 的核心論點：TA 容量介於中間，訊號比大 Teacher 更貼近 Student 能吸收的範圍)
 STAGE2_W_TEACHER1 = 0.25
 STAGE2_W_TEACHER2 = 0.25
 STAGE2_W_TA       = 0.50
@@ -700,30 +686,41 @@ for i in range(n_classes):
     report_lines.append(f"  {CLASS_NAMES[i]} AUC: {roc_auc[i]:.4f}")
 report_lines.append(f"  Micro-average AUC: {roc_auc['micro']:.4f}")
 
-# --- Confidence Interval ---
+# --- Confidence Interval (Wald + Wilson) ---
 n = np.sum(cm)
 correct_predictions = np.trace(cm)
 accuracy = correct_predictions / n
 Z = 1.96
+
+# Wald interval (原本就有的方法)
 se = math.sqrt((accuracy * (1 - accuracy)) / n)
 ci_lower = accuracy - (Z * se)
 ci_upper = accuracy + (Z * se)
 ci_lower = max(0.0, ci_lower)
 ci_upper = min(1.0, ci_upper)
 
+# Wilson score interval（新增，對小樣本/極端比例更穩健，可作為對照）
+denom = 1 + (Z ** 2) / n
+center = (accuracy + (Z ** 2) / (2 * n)) / denom
+margin = (Z * math.sqrt((accuracy * (1 - accuracy) / n) + (Z ** 2) / (4 * n ** 2))) / denom
+wilson_lower = max(0.0, center - margin)
+wilson_upper = min(1.0, center + margin)
+
 print(" Confidence Interval (95% CI)")
 print("="*45)
 print(f"▸ 測試總樣本數 (n) : {n}")
 print(f"▸ 預測正確數量     : {correct_predictions}")
 print(f"▸ 模型準確率 (Acc) : {accuracy:.4f} ({accuracy*100:.2f}%)")
-print(f"▸ 95% 信賴區間     : [{ci_lower:.4f}, {ci_upper:.4f}]")
+print(f"▸ 95% CI (Wald)    : [{ci_lower:.4f}, {ci_upper:.4f}]")
+print(f"▸ 95% CI (Wilson)  : [{wilson_lower:.4f}, {wilson_upper:.4f}]")
 print("-" * 45)
 
 report_lines.append("\n--- 95% Confidence Interval ---")
 report_lines.append(f"Sample size (n): {n}")
 report_lines.append(f"Correct predictions: {correct_predictions}")
 report_lines.append(f"Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
-report_lines.append(f"95% CI: [{ci_lower:.4f}, {ci_upper:.4f}]")
+report_lines.append(f"95% CI (Wald): [{ci_lower:.4f}, {ci_upper:.4f}]")
+report_lines.append(f"95% CI (Wilson): [{wilson_lower:.4f}, {wilson_upper:.4f}]")
 
 # ============================================================
 # 12. 儲存完整報告
