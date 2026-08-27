@@ -36,3 +36,10 @@ Class: Normal
   Ischemia AUC: 0.8996
   Normal AUC: 0.9521
   Micro-average AUC: 0.9177
+
+--- 95% Confidence Interval ---
+Sample size (n): 1330
+Correct predictions: 1027
+Accuracy: 0.7722 (77.22%)
+95% CI (Wald): [0.7496, 0.7947]
+95% CI (Wilson): [0.7489, 0.7939]
