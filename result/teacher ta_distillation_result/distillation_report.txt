@@ -42,4 +42,5 @@ Class: Normal
 Sample size (n): 1330
 Correct predictions: 1167
 Accuracy: 0.8774 (87.74%)
-95% CI: [0.8598, 0.8951]
+95% CI (Wald): [0.8598, 0.8951]
+95% CI (Wilson): [0.8587, 0.8940]
