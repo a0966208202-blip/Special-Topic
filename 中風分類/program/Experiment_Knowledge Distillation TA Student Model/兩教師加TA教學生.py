@@ -13,6 +13,10 @@ Stage 2: Teacher1 + Teacher2 + TA (三個來源同時)         -> Student (CNN8)
 # ============================================================
 
 import os
+os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0"
+os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=/usr/local/cuda"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
 import math
 import random
 import numpy as np
@@ -21,6 +25,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 import tensorflow as tf
+tf.config.optimizer.set_jit(False)
+print("✓ TensorFlow:", tf.__version__)
+print("✓ XLA JIT:", tf.config.optimizer.get_jit())
+
 from tensorflow.keras import layers, models
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications.efficientnet import preprocess_input
@@ -261,7 +269,7 @@ class MultiTeacherDistillationTrainer(tf.keras.Model):
         self.acc_metric = tf.keras.metrics.CategoricalAccuracy(name="accuracy")
 
     def compile(self, optimizer, alpha, temperature):
-        super().compile(optimizer=optimizer, run_eagerly=True)
+        super().compile(optimizer=optimizer, run_eagerly=True, jit_compile=False)
         self.alpha = alpha
         self.temperature = temperature
         self.student_loss_fn = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
@@ -326,7 +334,7 @@ class ThreeSourceDistillationTrainer(tf.keras.Model):
         self.acc_metric = tf.keras.metrics.CategoricalAccuracy(name="accuracy")
 
     def compile(self, optimizer, alpha, temperature):
-        super().compile(optimizer=optimizer, run_eagerly=True)
+        super().compile(optimizer=optimizer, run_eagerly=True, jit_compile=False)
         self.alpha = alpha
         self.temperature = temperature
         self.student_loss_fn = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
@@ -416,6 +424,15 @@ class SaveBestInnerModelWeights(tf.keras.callbacks.Callback):
         else:
             print(f"\nEpoch {epoch + 1}: {self.monitor} did not improve from {self.best:.5f}")
 
+class LearningRateLogger(tf.keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        lr = self.model.optimizer.learning_rate
+
+        if isinstance(lr, tf.keras.optimizers.schedules.LearningRateSchedule):
+            lr = lr(self.model.optimizer.iterations)
+
+        print(f" - learning_rate: {float(lr.numpy()):.2e}")
+
 
 # ============================================================
 # 8. Stage 1 訓練: 2 個 Teacher -> TA
@@ -436,11 +453,23 @@ ta_trainer = MultiTeacherDistillationTrainer(
     teachers=[teacher1_model, teacher2_model],
     teacher_weights=[STAGE1_W_TEACHER1, STAGE1_W_TEACHER2],
 )
+ta_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-5)
+
 ta_trainer.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+    optimizer=ta_optimizer,
     alpha=ALPHA,
     temperature=TEMPERATURE
 )
+
+ta_lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(
+    monitor='val_loss',
+    factor=0.5,
+    patience=5,
+    min_lr=1e-7,
+    verbose=1
+)
+
+ta_lr_logger = LearningRateLogger()
 
 print(f"\nStage 1 知識蒸餾配置 (Teacher x2 -> TA)：")
 print(f"  溫度參數 (Temperature): {TEMPERATURE}")
@@ -460,7 +489,7 @@ ta_history = ta_trainer.fit(
     train_loader,
     validation_data=val_loader,
     epochs=NUM_EPOCHS,
-    callbacks=[ta_checkpoint_cb],
+    callbacks=[ta_checkpoint_cb, ta_lr_scheduler, ta_lr_logger],
     verbose=1
 )
 print("\n--- Stage 1 訓練完成 ---")
@@ -474,7 +503,10 @@ print("✓ TA 模型已儲存！")
 # ============================================================
 print("\n--- 載入最佳 TA 模型，作為 Stage 2 的其中一個指導來源 ---")
 best_ta_path = os.path.join(OUTPUT_DIR, 'best_ta_model.keras')
-best_ta_model = tf.keras.models.load_model(best_ta_path)
+best_ta_model = tf.keras.models.load_model(
+    best_ta_path,
+    compile=False
+)
 best_ta_model.trainable = False
 print(f"✓ 已載入最佳 TA 模型: {best_ta_path}")
 
@@ -487,10 +519,24 @@ student_trainer = ThreeSourceDistillationTrainer(
     w_teacher2=STAGE2_W_TEACHER2,
     w_ta=STAGE2_W_TA,
 )
+student_optimizer = tf.keras.optimizers.Adam(
+    learning_rate=1e-5
+)
+
 student_trainer.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+    optimizer=student_optimizer,
     alpha=ALPHA,
     temperature=TEMPERATURE
+)
+
+student_lr_logger = LearningRateLogger()
+
+student_lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(
+    monitor='val_loss',
+    factor=0.5,
+    patience=5,
+    min_lr=1e-7,
+    verbose=1
 )
 
 print(f"\nStage 2 知識蒸餾配置 (Teacher1 + Teacher2 + TA -> Student)：")
@@ -511,7 +557,9 @@ student_history = student_trainer.fit(
     train_loader,
     validation_data=val_loader,
     epochs=NUM_EPOCHS,
-    callbacks=[student_checkpoint_cb],
+    callbacks=[student_checkpoint_cb,
+        student_lr_scheduler,
+        student_lr_logger],
     verbose=1
 )
 print("\n--- Stage 2 訓練完成 ---")
@@ -563,9 +611,18 @@ plot_training_curves(student_history, OUTPUT_DIR, tag='stage2_Student')
 # 11. 完整評估 (含 Specificity, NPV, ROC-AUC) — 針對最終 Student (CNN8)
 # ============================================================
 print("\n--- 載入最佳學生模型進行評估 ---")
-best_student_path = os.path.join(OUTPUT_DIR, 'best_student_model.keras')
-best_student = tf.keras.models.load_model(best_student_path)
+
+best_student_path = os.path.join(
+    OUTPUT_DIR,
+    'best_student_model.keras'
+)
+
+best_student = tf.keras.models.load_model(
+    best_student_path,
+    compile=False
+)
 print(f"✓ 已載入最佳學生模型: {best_student_path}")
+
 
 test_loader_t1      = test_loader.map(lambda xs, y: (xs[0], y))
 test_loader_t2      = test_loader.map(lambda xs, y: (xs[1], y))
@@ -574,26 +631,68 @@ test_loader_student = test_loader.map(lambda xs, y: (xs[2], y))
 y_true = test_labels
 n_classes = len(CLASS_NAMES)
 
-y_pred_logits = best_student.predict(test_loader_student.map(lambda x, y: x))
-y_pred_probs  = tf.nn.softmax(y_pred_logits, axis=1).numpy()
-y_pred        = np.argmax(y_pred_probs, axis=1)
+# ============================================================
+# 使用 eager mode 逐 batch 推論，避免 predict() 觸發 XLA/Triton
+# ============================================================
+print("\n--- 開始 Student 模型推論 ---")
+
+predictions = []
+
+for x_batch, _ in test_loader_student:
+    logits = best_student(x_batch, training=False)
+    predictions.append(logits.numpy())
+
+y_pred_logits = np.concatenate(predictions, axis=0)
+
+y_pred_probs = tf.nn.softmax(
+    tf.convert_to_tensor(y_pred_logits),
+    axis=1
+).numpy()
+
+y_pred = np.argmax(y_pred_probs, axis=1)
+
+print(f"✓ 推論完成，共 {len(y_pred)} 筆")
+
 
 # --- Accuracy: Teacher1 / Teacher2 / TA / Student ---
-teacher1_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-_, teacher1_acc = teacher1_model.evaluate(test_loader_t1, verbose=0)
+teacher1_predictions = []
 
-teacher2_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-_, teacher2_acc = teacher2_model.evaluate(test_loader_t2, verbose=0)
+for x_batch, _ in test_loader_t1:
+    logits = teacher1_model(x_batch, training=False)
+    teacher1_predictions.append(logits.numpy())
 
-best_ta_model.compile(optimizer='adam',
-                       loss=tf.keras.losses.CategoricalCrossentropy(from_logits=True),
-                       metrics=['accuracy'])
-_, ta_acc = best_ta_model.evaluate(test_loader_student, verbose=0)
+teacher1_logits = np.concatenate(teacher1_predictions, axis=0)
+teacher1_pred = np.argmax(teacher1_logits, axis=1)
 
-best_student.compile(optimizer='adam',
-                      loss=tf.keras.losses.CategoricalCrossentropy(from_logits=True),
-                      metrics=['accuracy'])
-_, student_acc = best_student.evaluate(test_loader_student, verbose=0)
+teacher1_acc = np.mean(teacher1_pred == y_true)
+
+
+teacher2_predictions = []
+
+for x_batch, _ in test_loader_t2:
+    logits = teacher2_model(x_batch, training=False)
+    teacher2_predictions.append(logits.numpy())
+
+teacher2_logits = np.concatenate(teacher2_predictions, axis=0)
+teacher2_pred = np.argmax(teacher2_logits, axis=1)
+
+teacher2_acc = np.mean(teacher2_pred == y_true)
+
+
+ta_predictions = []
+
+for x_batch, _ in test_loader_student:
+    logits = best_ta_model(x_batch, training=False)
+    ta_predictions.append(logits.numpy())
+
+ta_logits = np.concatenate(ta_predictions, axis=0)
+ta_pred = np.argmax(ta_logits, axis=1)
+
+ta_acc = np.mean(ta_pred == y_true)
+
+
+student_acc = np.mean(y_pred == y_true)
+
 
 best_source_acc = max(teacher1_acc, teacher2_acc, ta_acc)
 
