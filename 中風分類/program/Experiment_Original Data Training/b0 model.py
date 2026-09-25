@@ -6,17 +6,20 @@ CT Scan Classification for Stroke Detection
 """
 
 # === Main Libraries ===
+import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import train_test_split
 import os
+os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0"
 import cv2
 from tqdm import tqdm
 import shutil
 
 import tensorflow as tf
+tf.config.optimizer.set_jit(False)
 print(tf.__version__)  # 確認 TensorFlow 版本
 from tensorflow.keras.applications import EfficientNetB0
 from tensorflow.keras.applications.efficientnet import preprocess_input
@@ -171,7 +174,8 @@ for layer in base_model.layers[:150]:
 model.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
     loss='categorical_crossentropy',
-    metrics=['accuracy']
+    metrics=['accuracy'],
+    jit_compile=False
 )
 model.summary()
 
@@ -188,7 +192,7 @@ print("\n--- Starting Fine-tuning ---")
 history_finetune = model.fit(
     train_generator,
     validation_data=val_generator,
-    epochs=100,
+    epochs=50,
     callbacks=[checkpoint_callback]
 )
 print("\n--- Fine-tuning Finished ---")
@@ -339,8 +343,45 @@ for i in range(n_classes):
     report_lines_to_add.append(f"  {class_names[i]} AUC: {roc_auc[i]:0.4f}")
 report_lines_to_add.append(f"  Micro-average AUC: {roc_auc['micro']:.4f}")
 
+# === 3. 計算 95% 信賴區間 (Wald + Wilson) ===
+print("\n--- Calculating 95% Confidence Interval (Wald + Wilson) ---")
+n = np.sum(cm)
+correct_predictions = np.trace(cm)
+accuracy = correct_predictions / n
+Z = 1.96
 
-# === 3. 儲存包含所有指標的報告 ===
+# Wald interval
+se = math.sqrt((accuracy * (1 - accuracy)) / n)
+ci_lower = accuracy - (Z * se)
+ci_upper = accuracy + (Z * se)
+ci_lower = max(0.0, ci_lower)
+ci_upper = min(1.0, ci_upper)
+
+# Wilson score interval（對小樣本/極端比例更穩健，可作為對照）
+denom = 1 + (Z ** 2) / n
+center = (accuracy + (Z ** 2) / (2 * n)) / denom
+margin = (Z * math.sqrt((accuracy * (1 - accuracy) / n) + (Z ** 2) / (4 * n ** 2))) / denom
+wilson_lower = max(0.0, center - margin)
+wilson_upper = min(1.0, center + margin)
+
+print(" Confidence Interval (95% CI)")
+print("=" * 45)
+print(f"▸ 測試總樣本數 (n) : {n}")
+print(f"▸ 預測正確數量     : {correct_predictions}")
+print(f"▸ 模型準確率 (Acc) : {accuracy:.4f} ({accuracy*100:.2f}%)")
+print(f"▸ 95% CI (Wald)    : [{ci_lower:.4f}, {ci_upper:.4f}]")
+print(f"▸ 95% CI (Wilson)  : [{wilson_lower:.4f}, {wilson_upper:.4f}]")
+print("-" * 45)
+
+report_lines_to_add.append("\n--- 95% Confidence Interval ---")
+report_lines_to_add.append(f"Sample size (n): {n}")
+report_lines_to_add.append(f"Correct predictions: {correct_predictions}")
+report_lines_to_add.append(f"Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+report_lines_to_add.append(f"95% CI (Wald): [{ci_lower:.4f}, {ci_upper:.4f}]")
+report_lines_to_add.append(f"95% CI (Wilson): [{wilson_lower:.4f}, {wilson_upper:.4f}]")
+
+
+# === 4. 儲存包含所有指標的報告 ===
 report_filepath = os.path.join(output_dir, "classification_report.txt")
 with open(report_filepath, 'w') as f:
     # 寫入準確度 (Accuracy) 和 Loss
